@@ -62,7 +62,17 @@ type claudeResponse struct {
 
 // Verify はSPECとコードの一致度を検証する
 func (p *ClaudeProvider) Verify(ctx context.Context, specContent string, codeContents map[string]string) (*VerificationResult, error) {
-	prompt := buildVerificationPrompt(specContent, codeContents)
+	return p.VerifyWithOptions(ctx, specContent, codeContents, nil)
+}
+
+// VerifyWithOptions は検証観点を指定してSPECとコードの一致度を検証する
+func (p *ClaudeProvider) VerifyWithOptions(ctx context.Context, specContent string, codeContents map[string]string, opts *VerifyOptions) (*VerificationResult, error) {
+	var prompt string
+	if opts != nil && len(opts.VerificationFocus) > 0 {
+		prompt = buildVerificationPromptWithFocus(specContent, codeContents, opts.VerificationFocus)
+	} else {
+		prompt = buildVerificationPrompt(specContent, codeContents)
+	}
 
 	req := claudeRequest{
 		Model:     p.model,
@@ -118,41 +128,66 @@ func (p *ClaudeProvider) Verify(ctx context.Context, specContent string, codeCon
 	return parseVerificationResult(claudeResp.Content[0].Text)
 }
 
-// buildVerificationPrompt は検証用のプロンプトを構築する
-func buildVerificationPrompt(specContent string, codeContents map[string]string) string {
+// buildCodeSection はコードセクションを構築する共通関数
+func buildCodeSection(codeContents map[string]string) string {
 	var codeSection strings.Builder
 	for filePath, content := range codeContents {
 		codeSection.WriteString(fmt.Sprintf("\n### %s\n```\n%s\n```\n", filePath, content))
 	}
+	return codeSection.String()
+}
 
-	return fmt.Sprintf(`あなたはコードレビューの専門家です。以下のSPEC（仕様書）と実際のコードを比較して、一致度を評価してください。
+// getDefaultVerificationFocus はデフォルトの検証観点を返す
+func getDefaultVerificationFocus() []string {
+	return []string{
+		"画面構成: SPECに記載された要素がコードに存在するか",
+		"状態管理: SPECに記載された状態やフックが使用されているか",
+		"処理フロー: SPECに記載された処理フローがコードで実装されているか",
+		"バリデーション: SPECに記載されたバリデーションルールが実装されているか",
+		"エラーハンドリング: SPECに記載されたエラーケースが処理されているか",
+	}
+}
 
-## SPEC（仕様書）
+// buildVerificationPrompt は検証用のプロンプトを構築する
+// デフォルトの検証観点を使用してbuildVerificationPromptWithFocusを呼び出す
+func buildVerificationPrompt(specContent string, codeContents map[string]string) string {
+	return buildVerificationPromptWithFocus(specContent, codeContents, getDefaultVerificationFocus())
+}
+
+// buildVerificationPromptWithFocus はカスタム検証観点を含むプロンプトを構築する
+func buildVerificationPromptWithFocus(specContent string, codeContents map[string]string, verificationFocus []string) string {
+	codeSection := buildCodeSection(codeContents)
+
+	// 検証観点をフォーマット
+	var focusSection strings.Builder
+	for i, focus := range verificationFocus {
+		focusSection.WriteString(fmt.Sprintf("%d. %s\n", i+1, focus))
+	}
+
+	return fmt.Sprintf(`あなたはコードレビューの専門家です。以下のSPEC(仕様書)と実際のコードを比較して、一致度を評価してください。
+
+## SPEC(仕様書)
 %s
 
 ## 実際のコード
 %s
 
 ## 評価基準
-以下の観点で評価してください：
-1. 画面構成: SPECに記載された要素がコードに存在するか
-2. 状態管理: SPECに記載された状態やフックが使用されているか
-3. 処理フロー: SPECに記載された処理フローがコードで実装されているか
-4. バリデーション: SPECに記載されたバリデーションルールが実装されているか
-5. エラーハンドリング: SPECに記載されたエラーケースが処理されているか
+以下の観点で重点的に評価してください:
+%s
 
 ## 出力形式
-以下のJSON形式で出力してください：
+以下のJSON形式で出力してください:
 %sjson
 {
   "matchPercentage": <0-100の数値>,
   "matchedItems": ["一致している項目1", "一致している項目2", ...],
   "unmatchedItems": ["一致していない項目1", "一致していない項目2", ...],
-  "notes": "補足コメント（未実装の機能や改善点など）"
+  "notes": "補足コメント(未実装の機能や改善点など)"
 }
 %s
 
-JSONのみを出力してください。`, specContent, codeSection.String(), "```", "```")
+JSONのみを出力してください。`, specContent, codeSection, focusSection.String(), "```", "```")
 }
 
 // parseVerificationResult はClaude APIのレスポンスから検証結果を抽出する
@@ -272,14 +307,14 @@ func buildEndpointExtractionPrompt(sourceType string, codeContent string) string
 3. GraphQLの場合は、QueryとMutationを抽出し、methodは "QUERY" または "MUTATION" としてください
 
 ## 出力形式
-以下のJSON配列形式で出力してください：
+以下のJSON配列形式で出力してください:
 %sjson
 [
   {
     "method": "GET",
     "path": "/api/users",
-    "file": "ファイル名（分かれば）",
-    "description": "簡単な説明（あれば）"
+    "file": "ファイル名(分かれば)",
+    "description": "簡単な説明(あれば)"
   }
 ]
 %s

@@ -22,8 +22,14 @@ type Config struct {
 	// AIプロバイダーのAPIキー（環境変数から取得することを推奨）
 	AIAPIKey string `yaml:"ai_api_key,omitempty"`
 
-	// SPECタイプごとのコードディレクトリマッピング
-	Mapping map[string]string `yaml:"mapping"`
+	// SPECタイプごとのコードディレクトリマッピング（後方互換用）
+	Mapping map[string]string `yaml:"mapping,omitempty"`
+
+	// 詳細なSPECタイプ定義（新機能）
+	SpecTypes map[string]SpecType `yaml:"spec_types,omitempty"`
+
+	// グループ定義（新機能）
+	Groups map[string]Group `yaml:"groups,omitempty"`
 
 	// APIソース定義（エンドポイント抽出用）
 	APISources []APISource `yaml:"api_sources,omitempty"`
@@ -58,6 +64,30 @@ type VerifyOptions struct {
 
 	// 詳細出力を有効にする
 	Verbose bool `yaml:"verbose"`
+}
+
+// SpecType はSPECタイプの詳細定義
+type SpecType struct {
+	// コードパス（複数指定可能）
+	CodePaths []string `yaml:"code_paths"`
+
+	// 検証観点（AIへのヒント）
+	VerificationFocus []string `yaml:"verification_focus,omitempty"`
+
+	// ファイルパターン（オプション、glob形式）
+	FilePatterns []string `yaml:"file_patterns,omitempty"`
+
+	// 除外パターン（オプション）
+	ExcludePatterns []string `yaml:"exclude_patterns,omitempty"`
+}
+
+// Group はSPECタイプのグループ
+type Group struct {
+	// 含まれるタイプ
+	Types []string `yaml:"types"`
+
+	// 説明
+	Description string `yaml:"description,omitempty"`
 }
 
 // DefaultConfig はデフォルト設定を返す
@@ -154,10 +184,109 @@ func FindConfigFile() string {
 	return ".specverify.yml"
 }
 
-// GetCodePath はSPECタイプに対応するコードパスを返す
+// GetCodePath はSPECタイプに対応するコードパスを返す（後方互換用）
 func (c *Config) GetCodePath(specType string) string {
+	// 新しいspec_typesを優先
+	if st, ok := c.SpecTypes[specType]; ok && len(st.CodePaths) > 0 {
+		return filepath.Join(c.CodeDir, st.CodePaths[0])
+	}
+	// 従来のmappingにフォールバック
 	if mapped, ok := c.Mapping[specType]; ok {
 		return filepath.Join(c.CodeDir, mapped)
 	}
 	return c.CodeDir
+}
+
+// GetCodePaths はSPECタイプに対応する全てのコードパスを返す
+func (c *Config) GetCodePaths(specType string) []string {
+	// 新しいspec_typesを優先
+	if st, ok := c.SpecTypes[specType]; ok && len(st.CodePaths) > 0 {
+		paths := make([]string, len(st.CodePaths))
+		for i, p := range st.CodePaths {
+			paths[i] = filepath.Join(c.CodeDir, p)
+		}
+		return paths
+	}
+	// 従来のmappingにフォールバック
+	if mapped, ok := c.Mapping[specType]; ok {
+		return []string{filepath.Join(c.CodeDir, mapped)}
+	}
+	return []string{c.CodeDir}
+}
+
+// GetVerificationFocus はSPECタイプの検証観点を返す
+func (c *Config) GetVerificationFocus(specType string) []string {
+	if st, ok := c.SpecTypes[specType]; ok {
+		return st.VerificationFocus
+	}
+	return nil
+}
+
+// GetTypesByGroup はグループに含まれるSPECタイプを返す
+func (c *Config) GetTypesByGroup(groupName string) []string {
+	if group, ok := c.Groups[groupName]; ok {
+		return group.Types
+	}
+	return nil
+}
+
+// GetAllSpecTypes は定義されている全てのSPECタイプ名を返す
+func (c *Config) GetAllSpecTypes() []string {
+	typeSet := make(map[string]bool)
+
+	// spec_typesから取得
+	for typeName := range c.SpecTypes {
+		typeSet[typeName] = true
+	}
+
+	// mappingからも取得（後方互換）
+	for typeName := range c.Mapping {
+		typeSet[typeName] = true
+	}
+
+	types := make([]string, 0, len(typeSet))
+	for typeName := range typeSet {
+		types = append(types, typeName)
+	}
+	return types
+}
+
+// GetAllGroups は定義されている全てのグループ名を返す
+func (c *Config) GetAllGroups() []string {
+	groups := make([]string, 0, len(c.Groups))
+	for groupName := range c.Groups {
+		groups = append(groups, groupName)
+	}
+	return groups
+}
+
+// HasSpecType は指定されたSPECタイプが定義されているか確認する
+func (c *Config) HasSpecType(specType string) bool {
+	if _, ok := c.SpecTypes[specType]; ok {
+		return true
+	}
+	if _, ok := c.Mapping[specType]; ok {
+		return true
+	}
+	return false
+}
+
+// HasGroup は指定されたグループが定義されているか確認する
+func (c *Config) HasGroup(groupName string) bool {
+	_, ok := c.Groups[groupName]
+	return ok
+}
+
+// GetSpecTypeInfo はSPECタイプの詳細情報を返す（存在しない場合はnil）
+func (c *Config) GetSpecTypeInfo(specType string) *SpecType {
+	if st, ok := c.SpecTypes[specType]; ok {
+		return &st
+	}
+	// mappingから疑似的なSpecTypeを生成
+	if mapped, ok := c.Mapping[specType]; ok {
+		return &SpecType{
+			CodePaths: []string{mapped},
+		}
+	}
+	return nil
 }

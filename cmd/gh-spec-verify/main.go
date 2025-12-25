@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/k-totani/gh-spec-verify/internal/ai"
@@ -28,6 +29,10 @@ func main() {
 		runInit()
 	case "check", "verify":
 		runCheck(os.Args[2:])
+	case "types":
+		runTypes(os.Args[2:])
+	case "groups":
+		runGroups(os.Args[2:])
 	case "endpoints":
 		runEndpoints(os.Args[2:])
 	case "coverage":
@@ -49,7 +54,9 @@ type commonOptions struct {
 	// check-specific options
 	threshold int
 	failUnder int
-	specType  string
+	specType  string   // 後方互換用
+	specTypes []string // 複数タイプ指定
+	groupName string   // グループ指定
 }
 
 // parseCommonOptions parses common options from arguments
@@ -73,10 +80,15 @@ func parseCommonOptions(args []string) commonOptions {
 		case arg == "--fail-under" && i+1 < len(args):
 			fmt.Sscanf(args[i+1], "%d", &opts.failUnder)
 			i++
+		case (arg == "--group" || arg == "-g") && i+1 < len(args):
+			opts.groupName = args[i+1]
+			i++
 		case !strings.HasPrefix(arg, "-"):
 			// Non-flag argument (e.g., spec type for check command)
+			// 複数タイプをサポート
+			opts.specTypes = append(opts.specTypes, arg)
 			if opts.specType == "" {
-				opts.specType = arg
+				opts.specType = arg // 後方互換
 			}
 		}
 	}
@@ -91,18 +103,22 @@ Usage:
   gh spec-verify <command> [options]
 
 Commands:
-  init          設定ファイルを初期化
-  check [type]  SPECとコードの一致度を検証
-                type: ui, api, または省略で全て
-  endpoints     APIエンドポイント一覧を表示
-  coverage      APIカバレッジレポートを表示
-  version       バージョンを表示
-  help          このヘルプを表示
+  init              設定ファイルを初期化
+  check [type...]   SPECとコードの一致度を検証
+                    type: ui, api, domain, model 等（設定で定義）
+                    複数指定可能、省略で全て
+  types             定義済みSPECタイプ一覧を表示
+  groups            定義済みグループ一覧を表示
+  endpoints         APIエンドポイント一覧を表示
+  coverage          APIカバレッジレポートを表示
+  version           バージョンを表示
+  help              このヘルプを表示
 
 Options:
   --format json    JSON形式で出力（CI向け）
   --threshold N    合格ラインを指定（デフォルト: 50）
   --fail-under N   個別閾値を指定（N%未満のSPECがあれば失敗）
+  --group, -g NAME グループ単位で検証
   --config FILE    設定ファイルを指定
 
 Environment Variables:
@@ -115,8 +131,12 @@ Examples:
   gh spec-verify init
   gh spec-verify check
   gh spec-verify check ui
+  gh spec-verify check domain model          # 複数タイプ指定
+  gh spec-verify check --group backend       # グループ単位で検証
   gh spec-verify check --format json
   gh spec-verify check api --threshold 70
+  gh spec-verify types                       # 定義済みタイプ一覧
+  gh spec-verify groups                      # 定義済みグループ一覧
   gh spec-verify coverage
   gh spec-verify coverage --format json`)
 }
@@ -186,15 +206,94 @@ func runCheck(args []string) {
 		os.Exit(1)
 	}
 
+	// 検証対象タイプを決定
+	var specTypes []string
+
+	// グループ指定の場合
+	if commonOpts.groupName != "" {
+		if !cfg.HasGroup(commonOpts.groupName) {
+			fmt.Printf("エラー: グループ '%s' は定義されていません。\n", commonOpts.groupName)
+			fmt.Println("定義済みグループを確認するには: gh spec-verify groups")
+			os.Exit(1)
+		}
+		specTypes = cfg.GetTypesByGroup(commonOpts.groupName)
+
+		// グループ内のタイプが実際に定義されているかをチェック
+		var undefinedTypes []string
+		for _, typeName := range specTypes {
+			if !cfg.HasSpecType(typeName) {
+				undefinedTypes = append(undefinedTypes, typeName)
+			}
+		}
+		if len(undefinedTypes) > 0 {
+			// 警告はstderrに出力（JSON出力時にも対応）
+			fmt.Fprintf(os.Stderr, "⚠️  警告: グループ '%s' に存在しないタイプが含まれています: %s\n",
+				commonOpts.groupName, strings.Join(undefinedTypes, ", "))
+			fmt.Fprintln(os.Stderr, "定義済みタイプを確認するには: gh spec-verify types")
+			// 存在しないタイプを除外して続行
+			validTypes := []string{}
+			for _, typeName := range specTypes {
+				if cfg.HasSpecType(typeName) {
+					validTypes = append(validTypes, typeName)
+				}
+			}
+			specTypes = validTypes
+			if len(specTypes) == 0 {
+				fmt.Printf("エラー: グループ '%s' に有効なタイプが1つもありません。\n", commonOpts.groupName)
+				os.Exit(1)
+			}
+		}
+	} else if len(commonOpts.specTypes) > 0 {
+		// 複数タイプ指定の場合
+		specTypes = commonOpts.specTypes
+
+		// 直接指定されたタイプが実際に定義されているかをチェック
+		var undefinedTypes []string
+		for _, typeName := range specTypes {
+			if !cfg.HasSpecType(typeName) {
+				undefinedTypes = append(undefinedTypes, typeName)
+			}
+		}
+		if len(undefinedTypes) > 0 {
+			// 警告はstderrに出力（JSON出力時にも対応）
+			fmt.Fprintf(os.Stderr, "⚠️  警告: 存在しないタイプが指定されています: %s\n", strings.Join(undefinedTypes, ", "))
+			fmt.Fprintln(os.Stderr, "定義済みタイプを確認するには: gh spec-verify types")
+			// 存在しないタイプを除外して続行
+			validTypes := []string{}
+			for _, typeName := range specTypes {
+				if cfg.HasSpecType(typeName) {
+					validTypes = append(validTypes, typeName)
+				}
+			}
+			specTypes = validTypes
+			if len(specTypes) == 0 {
+				fmt.Fprintln(os.Stderr, "エラー: 有効なタイプが1つもありません。")
+				os.Exit(1)
+			}
+		}
+	}
+
 	// 検証を実行
 	ctx := context.Background()
 
 	if !commonOpts.jsonOutput {
-		fmt.Println("\n🔍 SPEC検証を開始します...\n")
+		fmt.Println("\n🔍 SPEC検証を開始します...")
+		if commonOpts.groupName != "" {
+			fmt.Printf("   グループ: %s (タイプ: %s)\n", commonOpts.groupName, strings.Join(specTypes, ", "))
+		} else if len(specTypes) > 0 {
+			fmt.Printf("   タイプ: %s\n", strings.Join(specTypes, ", "))
+		}
 		fmt.Println(strings.Repeat("━", 50))
 	}
 
-	summary, err := v.VerifyAll(ctx, commonOpts.specType)
+	var summary *verifier.Summary
+	if len(specTypes) > 0 {
+		// 複数タイプの検証
+		summary, err = v.VerifyMultipleTypes(ctx, specTypes)
+	} else {
+		// 従来の単一タイプまたは全タイプ検証
+		summary, err = v.VerifyAll(ctx, commonOpts.specType)
+	}
 	if err != nil {
 		fmt.Printf("エラー: 検証に失敗しました: %v\n", err)
 		os.Exit(1)
@@ -301,7 +400,7 @@ func outputConsole(summary *verifier.Summary, failUnder int) {
 
 	// サマリー
 	fmt.Println("\n" + strings.Repeat("━", 50))
-	fmt.Println("\n📊 サマリー\n")
+	fmt.Println("\n📊 サマリー")
 	fmt.Printf("   総SPEC数: %d\n", summary.TotalSpecs)
 	fmt.Printf("   平均一致度: %.1f%%\n", summary.AverageMatch)
 	fmt.Printf("   高一致(≥80%%): %d件\n", summary.HighMatchCount)
@@ -397,7 +496,7 @@ api_sources:
 	}
 
 	if !commonOpts.jsonOutput {
-		fmt.Println("\n📡 APIエンドポイントを抽出中...\n")
+		fmt.Println("\n📡 APIエンドポイントを抽出中...")
 	}
 
 	ctx := context.Background()
@@ -467,7 +566,7 @@ func runCoverage(args []string) {
 	}
 
 	if !commonOpts.jsonOutput {
-		fmt.Println("\n📊 APIカバレッジレポートを生成中...\n")
+		fmt.Println("\n📊 APIカバレッジレポートを生成中...")
 	}
 
 	ctx := context.Background()
@@ -556,5 +655,174 @@ func outputCoverageConsole(report *parser.CoverageReport) {
 		}
 	}
 
+	fmt.Println()
+}
+
+func runTypes(args []string) {
+	commonOpts := parseCommonOptions(args)
+
+	configFile := commonOpts.configFile
+	if configFile == "" {
+		configFile = config.FindConfigFile()
+	}
+
+	cfg, err := config.Load(configFile)
+	if err != nil {
+		fmt.Printf("エラー: 設定ファイルの読み込みに失敗しました: %v\n", err)
+		os.Exit(1)
+	}
+
+	types := cfg.GetAllSpecTypes()
+	sort.Strings(types)
+
+	if commonOpts.jsonOutput {
+		outputTypesJSON(cfg, types)
+	} else {
+		outputTypesConsole(cfg, types)
+	}
+}
+
+// SpecTypeOutput は types サブコマンドのJSON出力用
+type SpecTypeOutput struct {
+	Name              string   `json:"name"`
+	CodePaths         []string `json:"code_paths"`
+	VerificationFocus []string `json:"verification_focus,omitempty"`
+	FilePatterns      []string `json:"file_patterns,omitempty"`
+	ExcludePatterns   []string `json:"exclude_patterns,omitempty"`
+}
+
+func outputTypesJSON(cfg *config.Config, types []string) {
+	output := make([]SpecTypeOutput, 0, len(types))
+	for _, typeName := range types {
+		info := cfg.GetSpecTypeInfo(typeName)
+		if info != nil {
+			output = append(output, SpecTypeOutput{
+				Name:              typeName,
+				CodePaths:         info.CodePaths,
+				VerificationFocus: info.VerificationFocus,
+				FilePatterns:      info.FilePatterns,
+				ExcludePatterns:   info.ExcludePatterns,
+			})
+		}
+	}
+	data, _ := json.MarshalIndent(output, "", "  ")
+	fmt.Println(string(data))
+}
+
+func outputTypesConsole(cfg *config.Config, types []string) {
+	if len(types) == 0 {
+		fmt.Println("定義されているSPECタイプがありません。")
+		fmt.Println("設定ファイルに spec_types または mapping を追加してください。")
+		return
+	}
+
+	fmt.Println("\n📋 定義済みSPECタイプ")
+	fmt.Println(strings.Repeat("━", 50))
+
+	for _, typeName := range types {
+		info := cfg.GetSpecTypeInfo(typeName)
+		if info == nil {
+			continue
+		}
+
+		fmt.Printf("\n🏷️  %s\n", typeName)
+		fmt.Printf("   コードパス: %s\n", strings.Join(info.CodePaths, ", "))
+		if len(info.VerificationFocus) > 0 {
+			fmt.Println("   検証観点:")
+			for _, focus := range info.VerificationFocus {
+				fmt.Printf("     - %s\n", focus)
+			}
+		}
+		if len(info.FilePatterns) > 0 {
+			fmt.Printf("   ファイルパターン: %s\n", strings.Join(info.FilePatterns, ", "))
+		}
+		if len(info.ExcludePatterns) > 0 {
+			fmt.Printf("   除外パターン: %s\n", strings.Join(info.ExcludePatterns, ", "))
+		}
+	}
+
+	fmt.Println()
+}
+
+func runGroups(args []string) {
+	commonOpts := parseCommonOptions(args)
+
+	configFile := commonOpts.configFile
+	if configFile == "" {
+		configFile = config.FindConfigFile()
+	}
+
+	cfg, err := config.Load(configFile)
+	if err != nil {
+		fmt.Printf("エラー: 設定ファイルの読み込みに失敗しました: %v\n", err)
+		os.Exit(1)
+	}
+
+	groups := cfg.GetAllGroups()
+	sort.Strings(groups)
+
+	if commonOpts.jsonOutput {
+		outputGroupsJSON(cfg, groups)
+	} else {
+		outputGroupsConsole(cfg, groups)
+	}
+}
+
+// GroupOutput は groups サブコマンドのJSON出力用
+type GroupOutput struct {
+	Name        string   `json:"name"`
+	Types       []string `json:"types"`
+	Description string   `json:"description,omitempty"`
+}
+
+func outputGroupsJSON(cfg *config.Config, groups []string) {
+	output := make([]GroupOutput, 0, len(groups))
+	for _, groupName := range groups {
+		if group, ok := cfg.Groups[groupName]; ok {
+			output = append(output, GroupOutput{
+				Name:        groupName,
+				Types:       group.Types,
+				Description: group.Description,
+			})
+		}
+	}
+	data, _ := json.MarshalIndent(output, "", "  ")
+	fmt.Println(string(data))
+}
+
+func outputGroupsConsole(cfg *config.Config, groups []string) {
+	if len(groups) == 0 {
+		fmt.Println("定義されているグループがありません。")
+		fmt.Println("設定ファイルに groups を追加してください。")
+		fmt.Println(`
+例:
+groups:
+  frontend:
+    types: [ui]
+    description: "フロントエンド関連"
+  backend:
+    types: [api, service]
+    description: "バックエンド関連"`)
+		return
+	}
+
+	fmt.Println("\n📦 定義済みグループ")
+	fmt.Println(strings.Repeat("━", 50))
+
+	for _, groupName := range groups {
+		group, ok := cfg.Groups[groupName]
+		if !ok {
+			continue
+		}
+
+		fmt.Printf("\n🏷️  %s\n", groupName)
+		fmt.Printf("   タイプ: %s\n", strings.Join(group.Types, ", "))
+		if group.Description != "" {
+			fmt.Printf("   説明: %s\n", group.Description)
+		}
+	}
+
+	fmt.Printf("\n使用方法:\n")
+	fmt.Printf("  gh spec-verify check --group <グループ名>\n")
 	fmt.Println()
 }

@@ -28,10 +28,19 @@ type EndpointResult struct {
 	Description string `json:"description,omitempty"`
 }
 
+// VerifyOptions は検証時のオプション
+type VerifyOptions struct {
+	// 検証観点（AIへのヒント）
+	VerificationFocus []string
+}
+
 // Provider はAIプロバイダーのインターフェース
 type Provider interface {
 	// Verify はSPECとコードの一致度を検証する
 	Verify(ctx context.Context, specContent string, codeContents map[string]string) (*VerificationResult, error)
+
+	// VerifyWithOptions は検証観点を指定してSPECとコードの一致度を検証する
+	VerifyWithOptions(ctx context.Context, specContent string, codeContents map[string]string, opts *VerifyOptions) (*VerificationResult, error)
 
 	// ExtractEndpoints はコードからAPIエンドポイントを抽出する
 	ExtractEndpoints(ctx context.Context, sourceType string, codeContent string) ([]EndpointResult, error)

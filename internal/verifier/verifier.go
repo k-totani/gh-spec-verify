@@ -91,53 +91,18 @@ func New(cfg *config.Config) (*Verifier, error) {
 }
 
 // VerifyAll は全てのSPECを検証する
+// specTypeが空の場合は全タイプ、指定がある場合はそのタイプのみを検証する
 func (v *Verifier) VerifyAll(ctx context.Context, specType string) (*Summary, error) {
-	// SPECファイルを検索
-	specFiles, err := parser.FindSpecFiles(v.config.SpecsDir, specType)
-	if err != nil {
-		return nil, fmt.Errorf("failed to find spec files: %w", err)
+	// specTypeが指定されている場合は単一タイプ、空の場合は全タイプを検証
+	var specTypes []string
+	if specType == "" {
+		// 全タイプを検証（空文字列を渡すとparser.FindSpecFilesが全タイプを検索する）
+		specTypes = []string{""}
+	} else {
+		specTypes = []string{specType}
 	}
 
-	if len(specFiles) == 0 {
-		return &Summary{
-			TotalSpecs: 0,
-			Results:    []Result{},
-		}, nil
-	}
-
-	// 結果を格納するチャネル
-	resultChan := make(chan Result, len(specFiles))
-
-	// 並列実行のためのワーカープール
-	var wg sync.WaitGroup
-	semaphore := make(chan struct{}, v.config.Options.Concurrency)
-
-	for _, specFile := range specFiles {
-		wg.Add(1)
-		go func(sf string) {
-			defer wg.Done()
-			semaphore <- struct{}{}        // 取得
-			defer func() { <-semaphore }() // 解放
-
-			result := v.verifyOne(ctx, sf)
-			resultChan <- result
-		}(specFile)
-	}
-
-	// 全ての検証が完了するのを待つ
-	go func() {
-		wg.Wait()
-		close(resultChan)
-	}()
-
-	// 結果を収集
-	var results []Result
-	for result := range resultChan {
-		results = append(results, result)
-	}
-
-	// サマリーを計算
-	return v.calculateSummary(results), nil
+	return v.VerifyMultipleTypes(ctx, specTypes)
 }
 
 // VerifyOne は単一のSPECを検証する
@@ -191,8 +156,19 @@ func (v *Verifier) verifyOne(ctx context.Context, specFile string) Result {
 		return result
 	}
 
+	// 検証観点を取得
+	verificationFocus := v.config.GetVerificationFocus(spec.Type)
+
 	// AIで検証
-	verification, err := v.provider.Verify(ctx, spec.Content, codeContents)
+	var verification *ai.VerificationResult
+	if len(verificationFocus) > 0 {
+		opts := &ai.VerifyOptions{
+			VerificationFocus: verificationFocus,
+		}
+		verification, err = v.provider.VerifyWithOptions(ctx, spec.Content, codeContents, opts)
+	} else {
+		verification, err = v.provider.Verify(ctx, spec.Content, codeContents)
+	}
 	if err != nil {
 		result.Error = fmt.Errorf("failed to verify with AI: %w", err)
 		return result
@@ -233,4 +209,61 @@ func (v *Verifier) calculateSummary(results []Result) *Summary {
 // IsPassing は検証が合格基準を満たしているかを返す
 func (s *Summary) IsPassing(threshold int) bool {
 	return s.AverageMatch >= float64(threshold)
+}
+
+// VerifyMultipleTypes は複数のSPECタイプを検証する
+func (v *Verifier) VerifyMultipleTypes(ctx context.Context, specTypes []string) (*Summary, error) {
+	var allResults []Result
+
+	for _, specType := range specTypes {
+		// SPECファイルを検索
+		specFiles, err := parser.FindSpecFiles(v.config.SpecsDir, specType)
+		if err != nil {
+			return nil, fmt.Errorf("failed to find spec files for type %s: %w", specType, err)
+		}
+
+		if len(specFiles) == 0 {
+			continue
+		}
+
+		// 結果を格納するチャネル
+		resultChan := make(chan Result, len(specFiles))
+
+		// 並列実行のためのワーカープール
+		var wg sync.WaitGroup
+		semaphore := make(chan struct{}, v.config.Options.Concurrency)
+
+		for _, specFile := range specFiles {
+			wg.Add(1)
+			go func(sf string) {
+				defer wg.Done()
+				semaphore <- struct{}{}        // 取得
+				defer func() { <-semaphore }() // 解放
+
+				result := v.verifyOne(ctx, sf)
+				resultChan <- result
+			}(specFile)
+		}
+
+		// 全ての検証が完了するのを待つ
+		go func() {
+			wg.Wait()
+			close(resultChan)
+		}()
+
+		// 結果を収集
+		for result := range resultChan {
+			allResults = append(allResults, result)
+		}
+	}
+
+	if len(allResults) == 0 {
+		return &Summary{
+			TotalSpecs: 0,
+			Results:    []Result{},
+		}, nil
+	}
+
+	// サマリーを計算
+	return v.calculateSummary(allResults), nil
 }

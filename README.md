@@ -81,6 +81,26 @@ gh spec-verify check ui    # UIのSPECのみ
 gh spec-verify check api   # APIのSPECのみ
 ```
 
+### 複数タイプを同時検証
+
+```bash
+gh spec-verify check ui api domain   # 複数タイプを一度に検証
+```
+
+### グループ単位で検証
+
+```bash
+gh spec-verify check --group frontend   # フロントエンドグループを検証
+gh spec-verify check -g backend         # バックエンドグループを検証
+```
+
+### 利用可能なタイプ/グループを確認
+
+```bash
+gh spec-verify types    # 定義されているSPECタイプ一覧
+gh spec-verify groups   # 定義されているグループ一覧
+```
+
 ### JSON出力（CI向け）
 
 ```bash
@@ -97,6 +117,8 @@ gh spec-verify check --threshold 70
 
 `.specverify.yml`:
 
+### 基本設定（シンプル）
+
 ```yaml
 # SPECファイルのディレクトリ
 specs_dir: specs/
@@ -107,7 +129,7 @@ code_dir: src/
 # 使用するAIプロバイダー (claude, openai, gemini)
 ai_provider: claude
 
-# SPECタイプごとのコードディレクトリマッピング
+# SPECタイプごとのコードディレクトリマッピング（シンプル形式）
 mapping:
   ui: client/components
   api: server/routes
@@ -121,6 +143,72 @@ options:
   # 詳細出力
   verbose: false
 ```
+
+### 詳細設定（spec_typesとgroups）
+
+```yaml
+specs_dir: specs/
+code_dir: src/
+ai_provider: claude
+
+# SPECタイプの詳細定義
+spec_types:
+  ui:
+    # 検証対象のコードパス（複数指定可能）
+    code_paths:
+      - client/components
+      - client/pages
+    # AI検証時の重点観点
+    verification_focus:
+      - コンポーネント構成
+      - 画面遷移
+      - 状態管理
+
+  api:
+    code_paths:
+      - server/routes
+      - server/handlers
+    verification_focus:
+      - エンドポイント定義
+      - リクエスト/レスポンス形式
+      - 認証・認可
+
+  domain:
+    code_paths:
+      - server/domain
+      - server/models
+    verification_focus:
+      - ビジネスルール
+      - ドメインロジック
+      - バリデーション
+
+  service:
+    code_paths:
+      - server/services
+    verification_focus:
+      - ユースケース実装
+      - トランザクション処理
+
+# グループ定義
+groups:
+  frontend:
+    types: [ui]
+    description: "フロントエンド関連"
+
+  backend:
+    types: [api, domain, service]
+    description: "バックエンド関連"
+
+  all:
+    types: [ui, api, domain, service]
+    description: "全てのSPEC"
+
+options:
+  concurrency: 3
+  pass_threshold: 50
+```
+
+**Note**: `spec_types` と `mapping` の両方が定義されている場合、`spec_types` が優先されます。これにより既存の設定を段階的に移行できます。
 
 ## SPECファイルの書き方
 
