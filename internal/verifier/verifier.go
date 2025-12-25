@@ -32,6 +32,18 @@ type Result struct {
 	Error error
 }
 
+// FailingSpec は個別閾値を下回ったSPECの情報
+type FailingSpec struct {
+	// SPECファイルのパス
+	SpecFile string `json:"specFile"`
+
+	// SPECのタイトル
+	Title string `json:"title"`
+
+	// 一致度（パーセント）
+	MatchPercentage int `json:"matchPercentage"`
+}
+
 // Summary は全体の検証サマリー
 type Summary struct {
 	// 総SPEC数
@@ -51,6 +63,12 @@ type Summary struct {
 
 	// 個別結果
 	Results []Result
+
+	// 個別閾値（この値未満は失敗）
+	FailUnder int `json:"failUnder,omitempty"`
+
+	// 個別閾値を下回ったSPEC一覧
+	FailingSpecs []FailingSpec `json:"failingSpecs,omitempty"`
 }
 
 // Verifier はSPEC検証を行う

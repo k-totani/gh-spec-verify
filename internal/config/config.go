@@ -25,8 +25,23 @@ type Config struct {
 	// SPECタイプごとのコードディレクトリマッピング
 	Mapping map[string]string `yaml:"mapping"`
 
+	// APIソース定義（エンドポイント抽出用）
+	APISources []APISource `yaml:"api_sources,omitempty"`
+
 	// 検証時のオプション
 	Options VerifyOptions `yaml:"options"`
+}
+
+// APISource はAPIエンドポイントのソース定義
+type APISource struct {
+	// タイプ: express, fastify, openapi, graphql, go-echo, go-gin, rails, django, auto
+	Type string `yaml:"type"`
+
+	// ファイルパターン（glob形式）
+	Patterns []string `yaml:"patterns"`
+
+	// オプション設定
+	Options map[string]string `yaml:"options,omitempty"`
 }
 
 // VerifyOptions は検証時のオプション
@@ -34,8 +49,12 @@ type VerifyOptions struct {
 	// 並列実行数
 	Concurrency int `yaml:"concurrency"`
 
-	// 最低合格ライン（パーセント）
+	// 最低合格ライン（パーセント）- 全体平均
 	PassThreshold int `yaml:"pass_threshold"`
+
+	// 個別閾値（パーセント）- この値未満のSPECがあれば失敗
+	// 0の場合は無効
+	FailUnder int `yaml:"fail_under"`
 
 	// 詳細出力を有効にする
 	Verbose bool `yaml:"verbose"`
@@ -54,6 +73,7 @@ func DefaultConfig() *Config {
 		Options: VerifyOptions{
 			Concurrency:   3,
 			PassThreshold: 50,
+			FailUnder:     0, // 0は無効
 			Verbose:       false,
 		},
 	}

@@ -176,3 +176,142 @@ func parseVerificationResult(text string) (*VerificationResult, error) {
 
 	return &result, nil
 }
+
+// ExtractEndpoints はコードからAPIエンドポイントを抽出する
+func (p *ClaudeProvider) ExtractEndpoints(ctx context.Context, sourceType string, codeContent string) ([]EndpointResult, error) {
+	prompt := buildEndpointExtractionPrompt(sourceType, codeContent)
+
+	req := claudeRequest{
+		Model:     p.model,
+		MaxTokens: 4000,
+		Messages: []claudeMessage{
+			{Role: "user", Content: prompt},
+		},
+	}
+
+	reqBody, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", claudeAPIURL, bytes.NewReader(reqBody))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("x-api-key", p.apiKey)
+	httpReq.Header.Set("anthropic-version", "2023-06-01")
+
+	client := &http.Client{}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("failed to send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(body))
+	}
+
+	var claudeResp claudeResponse
+	if err := json.Unmarshal(body, &claudeResp); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	if claudeResp.Error != nil {
+		return nil, fmt.Errorf("API error: %s", claudeResp.Error.Message)
+	}
+
+	if len(claudeResp.Content) == 0 {
+		return nil, fmt.Errorf("empty response from API")
+	}
+
+	return parseEndpointResult(claudeResp.Content[0].Text)
+}
+
+// buildEndpointExtractionPrompt はエンドポイント抽出用のプロンプトを構築する
+func buildEndpointExtractionPrompt(sourceType string, codeContent string) string {
+	frameworkHint := ""
+	switch sourceType {
+	case "express":
+		frameworkHint = "Express.js (app.get, app.post, router.get, router.post など)"
+	case "fastify":
+		frameworkHint = "Fastify (fastify.get, fastify.post など)"
+	case "go-echo":
+		frameworkHint = "Go Echo (e.GET, e.POST, g.GET など)"
+	case "go-gin":
+		frameworkHint = "Go Gin (r.GET, r.POST, group.GET など)"
+	case "rails":
+		frameworkHint = "Ruby on Rails (routes.rb, get/post/resources など)"
+	case "django":
+		frameworkHint = "Django REST Framework (path, urlpatterns など)"
+	case "graphql":
+		frameworkHint = "GraphQL (Query, Mutation, type定義)"
+	default:
+		frameworkHint = "自動検出"
+	}
+
+	return fmt.Sprintf(`あなたはAPIエンドポイント抽出の専門家です。
+以下のコードからAPIエンドポイントを抽出してください。
+
+## フレームワーク/タイプ
+%s
+
+## コード
+%s
+
+## 抽出ルール
+1. 明確に定義されているエンドポイントのみを抽出してください
+2. 推測はしないでください
+3. GraphQLの場合は、QueryとMutationを抽出し、methodは "QUERY" または "MUTATION" としてください
+
+## 出力形式
+以下のJSON配列形式で出力してください：
+%sjson
+[
+  {
+    "method": "GET",
+    "path": "/api/users",
+    "file": "ファイル名（分かれば）",
+    "description": "簡単な説明（あれば）"
+  }
+]
+%s
+
+JSONのみを出力してください。エンドポイントが見つからない場合は空の配列 [] を返してください。`, frameworkHint, codeContent, "```", "```")
+}
+
+// parseEndpointResult はClaude APIのレスポンスからエンドポイント結果を抽出する
+func parseEndpointResult(text string) ([]EndpointResult, error) {
+	// JSONブロックを抽出
+	jsonRegex := regexp.MustCompile("```json\\s*([\\s\\S]*?)\\s*```")
+	matches := jsonRegex.FindStringSubmatch(text)
+
+	var jsonStr string
+	if len(matches) >= 2 {
+		jsonStr = matches[1]
+	} else {
+		// JSONブロックがない場合は直接パースを試みる
+		// JSON配列を探す
+		arrayRegex := regexp.MustCompile(`\[[\s\S]*\]`)
+		arrayMatch := arrayRegex.FindString(text)
+		if arrayMatch != "" {
+			jsonStr = arrayMatch
+		} else {
+			jsonStr = text
+		}
+	}
+
+	var results []EndpointResult
+	if err := json.Unmarshal([]byte(jsonStr), &results); err != nil {
+		return nil, fmt.Errorf("failed to parse endpoint result: %w", err)
+	}
+
+	return results, nil
+}

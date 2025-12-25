@@ -19,10 +19,22 @@ type VerificationResult struct {
 	Notes string `json:"notes"`
 }
 
+// EndpointResult はエンドポイント抽出結果を表す
+type EndpointResult struct {
+	Method      string `json:"method"`
+	Path        string `json:"path"`
+	Source      string `json:"source,omitempty"`
+	File        string `json:"file,omitempty"`
+	Description string `json:"description,omitempty"`
+}
+
 // Provider はAIプロバイダーのインターフェース
 type Provider interface {
 	// Verify はSPECとコードの一致度を検証する
 	Verify(ctx context.Context, specContent string, codeContents map[string]string) (*VerificationResult, error)
+
+	// ExtractEndpoints はコードからAPIエンドポイントを抽出する
+	ExtractEndpoints(ctx context.Context, sourceType string, codeContent string) ([]EndpointResult, error)
 
 	// Name はプロバイダー名を返す
 	Name() string
