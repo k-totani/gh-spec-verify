@@ -6,9 +6,9 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/k-totani/gh-spec-verify/internal/ai"
-	"github.com/k-totani/gh-spec-verify/internal/config"
-	"github.com/k-totani/gh-spec-verify/internal/parser"
+	"github.com/k-totani/spec-verify/internal/ai"
+	"github.com/k-totani/spec-verify/internal/config"
+	"github.com/k-totani/spec-verify/internal/parser"
 )
 
 // Result は単一のSPEC検証結果

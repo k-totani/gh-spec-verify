@@ -8,10 +8,10 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/k-totani/gh-spec-verify/internal/ai"
-	"github.com/k-totani/gh-spec-verify/internal/config"
-	"github.com/k-totani/gh-spec-verify/internal/parser"
-	"github.com/k-totani/gh-spec-verify/internal/verifier"
+	"github.com/k-totani/spec-verify/internal/ai"
+	"github.com/k-totani/spec-verify/internal/config"
+	"github.com/k-totani/spec-verify/internal/parser"
+	"github.com/k-totani/spec-verify/internal/verifier"
 )
 
 const version = "0.1.0"
@@ -38,7 +38,7 @@ func main() {
 	case "coverage":
 		runCoverage(os.Args[2:])
 	case "version", "-v", "--version":
-		fmt.Printf("gh-spec-verify version %s\n", version)
+		fmt.Printf("spec-verify version %s\n", version)
 	case "help", "-h", "--help":
 		printUsage()
 	default:
@@ -117,11 +117,11 @@ func (opts commonOptions) buildLoadOptions() []config.LoadOption {
 }
 
 func printUsage() {
-	fmt.Println(`gh-spec-verify - SPEC駆動開発のための検証ツール
+	fmt.Println(`spec-verify - SPEC駆動開発のための検証ツール
 
 Usage:
-  gh spec-verify <command> [options]
-  go run github.com/k-totani/gh-spec-verify/cmd/gh-spec-verify@latest <command> [options]
+  spec-verify <command> [options]
+  go run github.com/k-totani/spec-verify/cmd/spec-verify@latest <command> [options]
 
 Commands:
   init              設定ファイルを初期化
@@ -155,25 +155,25 @@ Environment Variables (優先順位: --api-key > 環境変数 > .env > 設定フ
   既存の環境変数は上書きされません。
 
 Examples:
-  # GitHub CLI Extension として使用
-  gh spec-verify init
-  gh spec-verify check
-  gh spec-verify check ui
+  # 基本的な使い方
+  spec-verify init
+  spec-verify check
+  spec-verify check ui
 
   # go run で直接実行
-  go run github.com/k-totani/gh-spec-verify/cmd/gh-spec-verify@latest check
+  go run github.com/k-totani/spec-verify/cmd/spec-verify@latest check
 
   # APIキーを直接指定
-  gh spec-verify check --api-key sk-xxx
+  spec-verify check --api-key sk-xxx
 
   # 複数タイプ/グループ指定
-  gh spec-verify check domain model          # 複数タイプ指定
-  gh spec-verify check --group backend       # グループ単位で検証
+  spec-verify check domain model          # 複数タイプ指定
+  spec-verify check --group backend       # グループ単位で検証
 
   # CI向け
-  gh spec-verify check --format json
-  gh spec-verify check api --threshold 70
-  gh spec-verify coverage --format json`)
+  spec-verify check --format json
+  spec-verify check api --threshold 70
+  spec-verify coverage --format json`)
 }
 
 func runInit() {
@@ -200,7 +200,7 @@ func runInit() {
 	fmt.Println("1. 設定ファイルを編集してプロジェクトに合わせてください")
 	fmt.Println("2. ANTHROPIC_API_KEY 環境変数を設定してください")
 	fmt.Println("3. specs/ ディレクトリにSPECファイルを配置してください")
-	fmt.Println("4. gh spec-verify check を実行してください")
+	fmt.Println("4. spec-verify check を実行してください")
 }
 
 func runCheck(args []string) {
@@ -248,7 +248,7 @@ func runCheck(args []string) {
 	if commonOpts.groupName != "" {
 		if !cfg.HasGroup(commonOpts.groupName) {
 			fmt.Printf("エラー: グループ '%s' は定義されていません。\n", commonOpts.groupName)
-			fmt.Println("定義済みグループを確認するには: gh spec-verify groups")
+			fmt.Println("定義済みグループを確認するには: spec-verify groups")
 			os.Exit(1)
 		}
 		specTypes = cfg.GetTypesByGroup(commonOpts.groupName)
@@ -264,7 +264,7 @@ func runCheck(args []string) {
 			// 警告はstderrに出力（JSON出力時にも対応）
 			fmt.Fprintf(os.Stderr, "⚠️  警告: グループ '%s' に存在しないタイプが含まれています: %s\n",
 				commonOpts.groupName, strings.Join(undefinedTypes, ", "))
-			fmt.Fprintln(os.Stderr, "定義済みタイプを確認するには: gh spec-verify types")
+			fmt.Fprintln(os.Stderr, "定義済みタイプを確認するには: spec-verify types")
 			// 存在しないタイプを除外して続行
 			validTypes := []string{}
 			for _, typeName := range specTypes {
@@ -292,7 +292,7 @@ func runCheck(args []string) {
 		if len(undefinedTypes) > 0 {
 			// 警告はstderrに出力（JSON出力時にも対応）
 			fmt.Fprintf(os.Stderr, "⚠️  警告: 存在しないタイプが指定されています: %s\n", strings.Join(undefinedTypes, ", "))
-			fmt.Fprintln(os.Stderr, "定義済みタイプを確認するには: gh spec-verify types")
+			fmt.Fprintln(os.Stderr, "定義済みタイプを確認するには: spec-verify types")
 			// 存在しないタイプを除外して続行
 			validTypes := []string{}
 			for _, typeName := range specTypes {
@@ -858,6 +858,6 @@ groups:
 	}
 
 	fmt.Printf("\n使用方法:\n")
-	fmt.Printf("  gh spec-verify check --group <グループ名>\n")
+	fmt.Printf("  spec-verify check --group <グループ名>\n")
 	fmt.Println()
 }

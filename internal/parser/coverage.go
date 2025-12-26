@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/k-totani/gh-spec-verify/internal/ai"
-	"github.com/k-totani/gh-spec-verify/internal/config"
+	"github.com/k-totani/spec-verify/internal/ai"
+	"github.com/k-totani/spec-verify/internal/config"
 )
 
 // CoverageReport はAPIエンドポイントのカバレッジレポート
