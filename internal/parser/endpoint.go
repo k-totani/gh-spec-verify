@@ -220,13 +220,20 @@ func extractWithAI(ctx context.Context, source config.APISource, provider ai.Pro
 		return nil, nil
 	}
 
-	// ファイルをバッチに分割
-	batches := splitIntoBatches(fileContents, maxBatchBytes)
-
-	// 各バッチでAI抽出を実行
+	// AI抽出オプション
 	opts := &ai.ExtractOptions{
 		SourceType: source.Type,
 		Category:   source.Category,
+	}
+
+	// Claudeの場合のみバッチ処理（レート制限が厳しいため）
+	// OpenAI/Geminiは一括処理
+	var batches [][]fileWithContent
+	if provider.Name() == "claude" {
+		batches = splitIntoBatches(fileContents, maxBatchBytes)
+	} else {
+		// 全ファイルを1バッチとして処理
+		batches = [][]fileWithContent{fileContents}
 	}
 
 	for _, batch := range batches {
