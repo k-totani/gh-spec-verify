@@ -106,7 +106,7 @@ func DefaultConfig() *Config {
 	return &Config{
 		SpecsDir:   "specs/",
 		CodeDir:    "src/",
-		AIProvider: "claude",
+		AIProvider: "gemini",
 		Mapping: map[string]string{
 			"ui":  "client/components",
 			"api": "server/routes",
