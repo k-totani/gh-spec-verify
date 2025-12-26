@@ -51,6 +51,8 @@ func main() {
 type commonOptions struct {
 	jsonOutput bool
 	configFile string
+	apiKey     string // CLI引数で渡すAPIキー
+	provider   string // AIプロバイダー指定
 	// check-specific options
 	threshold int
 	failUnder int
@@ -74,6 +76,12 @@ func parseCommonOptions(args []string) commonOptions {
 		case arg == "--config" && i+1 < len(args):
 			opts.configFile = args[i+1]
 			i++
+		case arg == "--api-key" && i+1 < len(args):
+			opts.apiKey = args[i+1]
+			i++
+		case arg == "--provider" && i+1 < len(args):
+			opts.provider = args[i+1]
+			i++
 		case arg == "--threshold" && i+1 < len(args):
 			fmt.Sscanf(args[i+1], "%d", &opts.threshold)
 			i++
@@ -96,11 +104,24 @@ func parseCommonOptions(args []string) commonOptions {
 	return opts
 }
 
+// buildLoadOptions はcommonOptionsからconfig.LoadOptionを構築する
+func (opts commonOptions) buildLoadOptions() []config.LoadOption {
+	var loadOpts []config.LoadOption
+	if opts.provider != "" {
+		loadOpts = append(loadOpts, config.WithProvider(opts.provider))
+	}
+	if opts.apiKey != "" {
+		loadOpts = append(loadOpts, config.WithAPIKey(opts.apiKey))
+	}
+	return loadOpts
+}
+
 func printUsage() {
-	fmt.Println(`gh-spec-verify - SPEC駆動開発のための検証ツール (GitHub CLI Extension)
+	fmt.Println(`gh-spec-verify - SPEC駆動開発のための検証ツール
 
 Usage:
   gh spec-verify <command> [options]
+  go run github.com/k-totani/gh-spec-verify/cmd/gh-spec-verify@latest <command> [options]
 
 Commands:
   init              設定ファイルを初期化
@@ -115,29 +136,43 @@ Commands:
   help              このヘルプを表示
 
 Options:
-  --format json    JSON形式で出力（CI向け）
-  --threshold N    合格ラインを指定（デフォルト: 50）
-  --fail-under N   個別閾値を指定（N%未満のSPECがあれば失敗）
-  --group, -g NAME グループ単位で検証
-  --config FILE    設定ファイルを指定
+  --format json      JSON形式で出力（CI向け）
+  --threshold N      合格ラインを指定（デフォルト: 50）
+  --fail-under N     個別閾値を指定（N%未満のSPECがあれば失敗）
+  --group, -g NAME   グループ単位で検証
+  --config FILE      設定ファイルを指定
+  --api-key KEY      APIキーを直接指定（環境変数より優先）
+  --provider NAME    AIプロバイダーを指定（claude, openai, gemini）
 
-Environment Variables:
+Environment Variables (優先順位: --api-key > 環境変数 > .env > 設定ファイル):
   ANTHROPIC_API_KEY    Claude APIキー
   OPENAI_API_KEY       OpenAI APIキー
   GOOGLE_API_KEY       Gemini APIキー
-  SPEC_VERIFY_API_KEY  汎用APIキー
+  SPEC_VERIFY_API_KEY  汎用APIキー（プロバイダーに関わらず使用可能）
+
+.env File Support:
+  プロジェクトルートに .env ファイルを配置すると自動的に読み込まれます。
+  既存の環境変数は上書きされません。
 
 Examples:
+  # GitHub CLI Extension として使用
   gh spec-verify init
   gh spec-verify check
   gh spec-verify check ui
+
+  # go run で直接実行
+  go run github.com/k-totani/gh-spec-verify/cmd/gh-spec-verify@latest check
+
+  # APIキーを直接指定
+  gh spec-verify check --api-key sk-xxx
+
+  # 複数タイプ/グループ指定
   gh spec-verify check domain model          # 複数タイプ指定
   gh spec-verify check --group backend       # グループ単位で検証
+
+  # CI向け
   gh spec-verify check --format json
   gh spec-verify check api --threshold 70
-  gh spec-verify types                       # 定義済みタイプ一覧
-  gh spec-verify groups                      # 定義済みグループ一覧
-  gh spec-verify coverage
   gh spec-verify coverage --format json`)
 }
 
@@ -178,7 +213,7 @@ func runCheck(args []string) {
 		configFile = config.FindConfigFile()
 	}
 
-	cfg, err := config.Load(configFile)
+	cfg, err := config.Load(configFile, commonOpts.buildLoadOptions()...)
 	if err != nil {
 		fmt.Printf("エラー: 設定ファイルの読み込みに失敗しました: %v\n", err)
 		os.Exit(1)
@@ -446,7 +481,7 @@ func loadConfigAndProvider(opts commonOptions) (*config.Config, ai.Provider, boo
 		configFile = config.FindConfigFile()
 	}
 
-	cfg, err := config.Load(configFile)
+	cfg, err := config.Load(configFile, opts.buildLoadOptions()...)
 	if err != nil {
 		fmt.Printf("エラー: 設定ファイルの読み込みに失敗しました: %v\n", err)
 		return nil, nil, false

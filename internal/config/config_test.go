@@ -215,6 +215,117 @@ options:
 	})
 }
 
+func TestLoadOptions(t *testing.T) {
+	tmpDir := t.TempDir()
+	configFile := filepath.Join(tmpDir, ".specverify.yml")
+
+	configContent := `
+specs_dir: specs/
+code_dir: src/
+ai_provider: claude
+ai_api_key: config-key
+`
+	if err := os.WriteFile(configFile, []byte(configContent), 0644); err != nil {
+		t.Fatalf("Failed to write config file: %v", err)
+	}
+
+	// 環境変数をクリア
+	savedKeys := map[string]string{
+		"SPEC_VERIFY_API_KEY": os.Getenv("SPEC_VERIFY_API_KEY"),
+		"ANTHROPIC_API_KEY":   os.Getenv("ANTHROPIC_API_KEY"),
+		"OPENAI_API_KEY":      os.Getenv("OPENAI_API_KEY"),
+	}
+	defer func() {
+		for k, v := range savedKeys {
+			if v != "" {
+				os.Setenv(k, v)
+			} else {
+				os.Unsetenv(k)
+			}
+		}
+	}()
+	for k := range savedKeys {
+		os.Unsetenv(k)
+	}
+
+	t.Run("WithAPIKey overrides config file", func(t *testing.T) {
+		cfg, err := Load(configFile, WithAPIKey("cli-key"))
+		if err != nil {
+			t.Fatalf("Load failed: %v", err)
+		}
+		if cfg.AIAPIKey != "cli-key" {
+			t.Errorf("Expected 'cli-key', got '%s'", cfg.AIAPIKey)
+		}
+	})
+
+	t.Run("WithProvider changes provider", func(t *testing.T) {
+		cfg, err := Load(configFile, WithProvider("openai"))
+		if err != nil {
+			t.Fatalf("Load failed: %v", err)
+		}
+		if cfg.AIProvider != "openai" {
+			t.Errorf("Expected 'openai', got '%s'", cfg.AIProvider)
+		}
+	})
+
+	t.Run("WithProvider affects API key lookup", func(t *testing.T) {
+		// OpenAI用の環境変数をセット
+		os.Setenv("OPENAI_API_KEY", "openai-env-key")
+		defer os.Unsetenv("OPENAI_API_KEY")
+
+		cfg, err := Load(configFile, WithProvider("openai"))
+		if err != nil {
+			t.Fatalf("Load failed: %v", err)
+		}
+		if cfg.AIAPIKey != "openai-env-key" {
+			t.Errorf("Expected 'openai-env-key', got '%s'", cfg.AIAPIKey)
+		}
+	})
+
+	t.Run("CLI API key has highest priority", func(t *testing.T) {
+		os.Setenv("OPENAI_API_KEY", "env-key")
+		defer os.Unsetenv("OPENAI_API_KEY")
+
+		cfg, err := Load(configFile, WithProvider("openai"), WithAPIKey("cli-key"))
+		if err != nil {
+			t.Fatalf("Load failed: %v", err)
+		}
+		if cfg.AIAPIKey != "cli-key" {
+			t.Errorf("Expected CLI key 'cli-key', got '%s'", cfg.AIAPIKey)
+		}
+	})
+}
+
+func TestHasAPIKeyOption(t *testing.T) {
+	t.Run("returns true when WithAPIKey is used", func(t *testing.T) {
+		opts := []LoadOption{WithAPIKey("test-key")}
+		if !hasAPIKeyOption(opts) {
+			t.Error("Expected true, got false")
+		}
+	})
+
+	t.Run("returns false when WithAPIKey is empty", func(t *testing.T) {
+		opts := []LoadOption{WithAPIKey("")}
+		if hasAPIKeyOption(opts) {
+			t.Error("Expected false, got true")
+		}
+	})
+
+	t.Run("returns false when only WithProvider is used", func(t *testing.T) {
+		opts := []LoadOption{WithProvider("openai")}
+		if hasAPIKeyOption(opts) {
+			t.Error("Expected false, got true")
+		}
+	})
+
+	t.Run("returns false when no options", func(t *testing.T) {
+		opts := []LoadOption{}
+		if hasAPIKeyOption(opts) {
+			t.Error("Expected false, got true")
+		}
+	})
+}
+
 func TestSpecTypesPriorityOverMapping(t *testing.T) {
 	// spec_types と mapping 両方が定義された場合、spec_types が優先されることを確認
 	tmpDir := t.TempDir()

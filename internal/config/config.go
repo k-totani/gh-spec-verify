@@ -110,12 +110,19 @@ func DefaultConfig() *Config {
 }
 
 // Load は設定ファイルを読み込む
-func Load(path string) (*Config, error) {
+// オプションでAPIキーを直接渡すことも可能（CLI引数用）
+func Load(path string, opts ...LoadOption) (*Config, error) {
+	// .envファイルを先に読み込む（環境変数より低優先）
+	_ = LoadEnvFile()
+
 	// デフォルト設定から開始
 	cfg := DefaultConfig()
 
 	// ファイルが存在しない場合はデフォルトを返す
 	if _, err := os.Stat(path); os.IsNotExist(err) {
+		// 環境変数からAPIキーを取得
+		cfg.AIAPIKey = GetAPIKeyFromEnv(cfg.AIProvider)
+		applyLoadOptions(cfg, opts)
 		return cfg, nil
 	}
 
@@ -128,24 +135,58 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
 	}
 
-	// 環境変数からAPIキーを取得（設定ファイルより優先）
-	if envKey := os.Getenv("SPEC_VERIFY_API_KEY"); envKey != "" {
-		cfg.AIAPIKey = envKey
-	}
+	// オプションを適用（CLI引数が最優先）
+	// 注意: providerの変更を先に適用してから、APIキーを取得する
+	applyLoadOptions(cfg, opts)
 
-	// プロバイダー固有の環境変数もチェック
-	if cfg.AIAPIKey == "" {
-		switch cfg.AIProvider {
-		case "claude":
-			cfg.AIAPIKey = os.Getenv("ANTHROPIC_API_KEY")
-		case "openai":
-			cfg.AIAPIKey = os.Getenv("OPENAI_API_KEY")
-		case "gemini":
-			cfg.AIAPIKey = os.Getenv("GOOGLE_API_KEY")
+	// 環境変数からAPIキーを取得（設定ファイルより優先、ただしCLI引数は除く）
+	// CLI引数でAPIキーが指定されていない場合のみ、環境変数から取得
+	if !hasAPIKeyOption(opts) {
+		if envKey := GetAPIKeyFromEnv(cfg.AIProvider); envKey != "" {
+			cfg.AIAPIKey = envKey
 		}
 	}
 
 	return cfg, nil
+}
+
+// hasAPIKeyOption はLoadOptionにAPIキー指定が含まれるか確認
+func hasAPIKeyOption(opts []LoadOption) bool {
+	// LoadOptionは関数なので直接判定できない
+	// 代わりに、applyLoadOptions後にAPIKeyが設定されているかで判断
+	// この関数は空のConfigでオプションを適用して確認する
+	testCfg := &Config{}
+	for _, opt := range opts {
+		opt(testCfg)
+	}
+	return testCfg.AIAPIKey != ""
+}
+
+// LoadOption は設定読み込み時のオプション
+type LoadOption func(*Config)
+
+// WithAPIKey はAPIキーを直接指定するオプション
+func WithAPIKey(key string) LoadOption {
+	return func(cfg *Config) {
+		if key != "" {
+			cfg.AIAPIKey = key
+		}
+	}
+}
+
+// WithProvider はAIプロバイダーを指定するオプション
+func WithProvider(provider string) LoadOption {
+	return func(cfg *Config) {
+		if provider != "" {
+			cfg.AIProvider = provider
+		}
+	}
+}
+
+func applyLoadOptions(cfg *Config, opts []LoadOption) {
+	for _, opt := range opts {
+		opt(cfg)
+	}
 }
 
 // Save は設定ファイルを保存する
