@@ -130,8 +130,9 @@ func (v *Verifier) verifyOne(ctx context.Context, specFile string) Result {
 	result.Title = spec.Title
 	result.RoutePath = spec.RoutePath
 
-	// 関連コードファイルを検索
-	codeFiles, err := parser.FindCodeFiles(spec, v.config.CodeDir, v.config.Mapping)
+	// 関連コードファイルを検索（spec_types.code_paths を使用）
+	codePaths := v.config.GetCodePaths(spec.Type)
+	codeFiles, err := parser.FindCodeFilesWithCodePaths(spec, v.config.CodeDir, codePaths)
 	if err != nil {
 		result.Error = fmt.Errorf("failed to find code files: %w", err)
 		return result

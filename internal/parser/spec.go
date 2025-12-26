@@ -214,8 +214,8 @@ func FindSpecFiles(specsDir string, specType string) ([]string, error) {
 	return files, nil
 }
 
-// FindCodeFiles はSPECに関連するコードファイルを検索する
-func FindCodeFiles(spec *Spec, codeDir string, mapping map[string]string) ([]string, error) {
+// FindCodeFilesWithCodePaths はSPECに関連するコードファイルを検索する（複数ベースディレクトリ対応）
+func FindCodeFilesWithCodePaths(spec *Spec, codeDir string, codePaths []string) ([]string, error) {
 	var files []string
 	seen := make(map[string]bool)
 
@@ -228,10 +228,9 @@ func FindCodeFiles(spec *Spec, codeDir string, mapping map[string]string) ([]str
 		}
 	}
 
-	// マッピングからベースディレクトリを取得
-	baseDir := codeDir
-	if mapped, ok := mapping[spec.Type]; ok {
-		baseDir = filepath.Join(codeDir, mapped)
+	// codePaths が空の場合は codeDir をデフォルトとして使用
+	if len(codePaths) == 0 {
+		codePaths = []string{codeDir}
 	}
 
 	// ルートパスから推測
@@ -242,50 +241,55 @@ func FindCodeFiles(spec *Spec, codeDir string, mapping map[string]string) ([]str
 			routeName = "index"
 		}
 
-		// 可能なファイル名パターン
-		patterns := []string{
-			filepath.Join(baseDir, routeName+".tsx"),
-			filepath.Join(baseDir, routeName+".ts"),
-			filepath.Join(baseDir, routeName+".jsx"),
-			filepath.Join(baseDir, routeName+".js"),
-			filepath.Join(baseDir, "pages", routeName+".tsx"),
-			filepath.Join(baseDir, "routes", routeName+".tsx"),
-		}
+		// 各 codePath に対してパターンを試す
+		for _, baseDir := range codePaths {
+			// 可能なファイル名パターン
+			patterns := []string{
+				filepath.Join(baseDir, routeName+".tsx"),
+				filepath.Join(baseDir, routeName+".ts"),
+				filepath.Join(baseDir, routeName+".jsx"),
+				filepath.Join(baseDir, routeName+".js"),
+				filepath.Join(baseDir, "pages", routeName+".tsx"),
+				filepath.Join(baseDir, "routes", routeName+".tsx"),
+			}
 
-		for _, pattern := range patterns {
-			addFile(pattern)
-		}
+			for _, pattern := range patterns {
+				addFile(pattern)
+			}
 
-		// ディレクトリ内を検索
-		if _, err := os.Stat(baseDir); err == nil {
-			filepath.Walk(baseDir, func(path string, info os.FileInfo, err error) error {
-				if err != nil {
-					return nil
-				}
-				if info.IsDir() {
-					return nil
-				}
-
-				// ファイル名にルート名が含まれているか
-				baseName := strings.ToLower(filepath.Base(path))
-				if strings.Contains(baseName, strings.ToLower(routeName)) {
-					// テストファイルを除外
-					if !strings.Contains(baseName, ".test.") && !strings.Contains(baseName, ".spec.") {
-						addFile(path)
+			// ディレクトリ内を検索
+			if _, err := os.Stat(baseDir); err == nil {
+				filepath.Walk(baseDir, func(path string, info os.FileInfo, err error) error {
+					if err != nil {
+						return nil
 					}
-				}
+					if info.IsDir() {
+						return nil
+					}
 
-				return nil
-			})
+					// ファイル名にルート名が含まれているか
+					baseName := strings.ToLower(filepath.Base(path))
+					if strings.Contains(baseName, strings.ToLower(routeName)) {
+						// テストファイルを除外
+						if !strings.Contains(baseName, ".test.") && !strings.Contains(baseName, ".spec.") {
+							addFile(path)
+						}
+					}
+
+					return nil
+				})
+			}
 		}
 	}
 
-	// 関連ファイルを追加
+	// 関連ファイルを追加（パス正規化で二重結合を防ぐ）
 	for _, relFile := range spec.RelatedFiles {
+		// resolveRelatedPath で正規化
+		resolvedPath := resolveRelatedPath(codeDir, relFile)
 		possiblePaths := []string{
-			filepath.Join(codeDir, relFile),
-			filepath.Join(codeDir, relFile+".tsx"),
-			filepath.Join(codeDir, relFile+".ts"),
+			resolvedPath,
+			resolvedPath + ".tsx",
+			resolvedPath + ".ts",
 		}
 		for _, p := range possiblePaths {
 			addFile(p)
@@ -293,6 +297,20 @@ func FindCodeFiles(spec *Spec, codeDir string, mapping map[string]string) ([]str
 	}
 
 	return files, nil
+}
+
+// FindCodeFiles はSPECに関連するコードファイルを検索する（後方互換用）
+func FindCodeFiles(spec *Spec, codeDir string, mapping map[string]string) ([]string, error) {
+	// マッピングからベースディレクトリを構築
+	var codePaths []string
+	if mapped, ok := mapping[spec.Type]; ok {
+		codePaths = []string{filepath.Join(codeDir, mapped)}
+	} else {
+		codePaths = []string{codeDir}
+	}
+
+	// 新関数に委譲
+	return FindCodeFilesWithCodePaths(spec, codeDir, codePaths)
 }
 
 // ReadFiles は複数のファイルを読み込む
@@ -313,4 +331,26 @@ func ReadFiles(paths []string) (map[string]string, error) {
 // Scanner は標準入力からの読み取り用
 func Scanner() *bufio.Scanner {
 	return bufio.NewScanner(os.Stdin)
+}
+
+// resolveRelatedPath は関連ファイルパスを正規化する
+// codeDir で始まるパスの二重結合を防ぐ
+func resolveRelatedPath(codeDir, relFile string) string {
+	// 絶対パスならそのまま返す
+	if filepath.IsAbs(relFile) {
+		return relFile
+	}
+
+	// 両方を正規化して比較
+	cleanCodeDir := filepath.Clean(codeDir)
+	cleanRelFile := filepath.Clean(relFile)
+
+	// relFile が既に codeDir で始まる場合は結合しない
+	// 例: codeDir=src, relFile=src/client/... → src/client/... をそのまま返す
+	if strings.HasPrefix(cleanRelFile, cleanCodeDir+string(filepath.Separator)) || cleanRelFile == cleanCodeDir {
+		return cleanRelFile
+	}
+
+	// それ以外は結合
+	return filepath.Join(codeDir, relFile)
 }
