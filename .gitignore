@@ -1,5 +1,5 @@
 # Binaries (root level only)
-/gh-spec-verify
+/spec-verify
 *.exe
 *.exe~
 *.dll

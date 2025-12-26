@@ -1,13 +1,13 @@
-project_name: gh-spec-verify
+project_name: spec-verify
 
 before:
   hooks:
     - go mod tidy
 
 builds:
-  - id: gh-spec-verify
-    main: ./cmd/gh-spec-verify
-    binary: gh-spec-verify
+  - id: spec-verify
+    main: ./cmd/spec-verify
+    binary: spec-verify
     env:
       - CGO_ENABLED=0
     goos:
@@ -42,5 +42,5 @@ changelog:
 release:
   github:
     owner: k-totani
-    name: gh-spec-verify
+    name: spec-verify
   prerelease: auto
