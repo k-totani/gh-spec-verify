@@ -212,9 +212,14 @@ func parseVerificationResult(text string) (*VerificationResult, error) {
 	return &result, nil
 }
 
-// ExtractEndpoints はコードからAPIエンドポイントを抽出する
-func (p *ClaudeProvider) ExtractEndpoints(ctx context.Context, sourceType string, codeContent string) ([]EndpointResult, error) {
-	prompt := buildEndpointExtractionPrompt(sourceType, codeContent)
+// ExtractEndpoints はコードからAPIエンドポイント/ページルートを抽出する
+func (p *ClaudeProvider) ExtractEndpoints(ctx context.Context, opts *ExtractOptions, codeContent string) ([]EndpointResult, error) {
+	var prompt string
+	if opts.IsUICategory() {
+		prompt = buildUIRouteExtractionPrompt(opts.GetSourceType(), codeContent)
+	} else {
+		prompt = buildEndpointExtractionPrompt(opts.GetSourceType(), codeContent)
+	}
 
 	req := claudeRequest{
 		Model:     p.model,
@@ -349,4 +354,65 @@ func parseEndpointResult(text string) ([]EndpointResult, error) {
 	}
 
 	return results, nil
+}
+
+// buildUIRouteExtractionPrompt はUIページルート抽出用のプロンプトを構築する
+func buildUIRouteExtractionPrompt(sourceType string, codeContent string) string {
+	frameworkHint := ""
+	switch sourceType {
+	case "remix":
+		frameworkHint = "Remix (ファイルベースルーティング)"
+	case "nextjs":
+		frameworkHint = "Next.js (pages または app ディレクトリルーティング)"
+	case "react-router":
+		frameworkHint = "React Router (createBrowserRouter, Route コンポーネント)"
+	case "vue-router":
+		frameworkHint = "Vue Router (routes 配列)"
+	default:
+		frameworkHint = "自動検出（ファイルベースルーティングまたはルーター設定から検出）"
+	}
+
+	return fmt.Sprintf(`あなたはフロントエンドルート抽出の専門家です。
+以下のコードからページルート（画面パス）を抽出してください。
+
+## フレームワーク/タイプ
+%s
+
+## コード
+%s
+
+## 抽出ルール
+1. ファイルベースルーティングの場合:
+   - ファイル名からルートパスを推測してください
+   - 例: "src/client/routes/users.tsx" → "/users"
+   - 例: "src/client/routes/admin/settings.tsx" → "/admin/settings"
+   - 例: "app/routes/_index.tsx" → "/"
+   - 例: "app/routes/users.$id.tsx" → "/users/:id"
+   - "_" で始まるファイルはレイアウトまたはインデックスを示す場合があります
+
+2. ルーター設定ファイルの場合:
+   - path プロパティや Route コンポーネントの path 属性を抽出してください
+
+3. 明確に定義されているルートのみを抽出してください
+4. 推測は最小限にしてください
+5. コンポーネントファイル（ページではない部品）は含めないでください
+
+## 出力形式
+以下のJSON配列形式で出力してください:
+%sjson
+[
+  {
+    "method": "PAGE",
+    "path": "/users",
+    "file": "ファイル名",
+    "description": "画面の説明(あれば)"
+  }
+]
+%s
+
+注意:
+- methodは常に "PAGE" としてください
+- ルートが見つからない場合は空の配列 [] を返してください
+
+JSONのみを出力してください。`, frameworkHint, codeContent, "```", "```")
 }

@@ -168,10 +168,17 @@ func extractWithAI(ctx context.Context, source config.APISource, provider ai.Pro
 	// パターンにマッチするファイルを収集
 	var files []string
 	for _, pattern := range source.Patterns {
-		matches, err := filepath.Glob(pattern)
-		if err != nil {
-			// globが失敗した場合、再帰的なパターンかもしれない
+		var matches []string
+		var err error
+
+		// ** パターンを含む場合は再帰検索を使用
+		if strings.Contains(pattern, "**") {
 			matches, err = findFilesRecursive(pattern)
+			if err != nil {
+				continue
+			}
+		} else {
+			matches, err = filepath.Glob(pattern)
 			if err != nil {
 				continue
 			}
@@ -197,8 +204,12 @@ func extractWithAI(ctx context.Context, source config.APISource, provider ai.Pro
 		return nil, nil
 	}
 
-	// AIでエンドポイントを抽出
-	aiResults, err := provider.ExtractEndpoints(ctx, source.Type, strings.Join(fileContents, "\n\n"))
+	// AIでエンドポイント/ルートを抽出
+	opts := &ai.ExtractOptions{
+		SourceType: source.Type,
+		Category:   source.Category,
+	}
+	aiResults, err := provider.ExtractEndpoints(ctx, opts, strings.Join(fileContents, "\n\n"))
 	if err != nil {
 		return nil, err
 	}

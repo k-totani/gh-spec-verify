@@ -28,6 +28,33 @@ type EndpointResult struct {
 	Description string `json:"description,omitempty"`
 }
 
+// カテゴリ定数
+const (
+	CategoryAPI = "api"
+	CategoryUI  = "ui"
+)
+
+// ExtractOptions はエンドポイント抽出時のオプション
+type ExtractOptions struct {
+	// ソースタイプ (express, auto など)
+	SourceType string
+	// カテゴリ (api, ui)
+	Category string
+}
+
+// IsUICategory はUIカテゴリかどうかを判定する
+func (o *ExtractOptions) IsUICategory() bool {
+	return o != nil && o.Category == CategoryUI
+}
+
+// GetSourceType はソースタイプを取得する（nilセーフ）
+func (o *ExtractOptions) GetSourceType() string {
+	if o == nil {
+		return ""
+	}
+	return o.SourceType
+}
+
 // VerifyOptions は検証時のオプション
 type VerifyOptions struct {
 	// 検証観点（AIへのヒント）
@@ -42,8 +69,8 @@ type Provider interface {
 	// VerifyWithOptions は検証観点を指定してSPECとコードの一致度を検証する
 	VerifyWithOptions(ctx context.Context, specContent string, codeContents map[string]string, opts *VerifyOptions) (*VerificationResult, error)
 
-	// ExtractEndpoints はコードからAPIエンドポイントを抽出する
-	ExtractEndpoints(ctx context.Context, sourceType string, codeContent string) ([]EndpointResult, error)
+	// ExtractEndpoints はコードからAPIエンドポイント/ページルートを抽出する
+	ExtractEndpoints(ctx context.Context, opts *ExtractOptions, codeContent string) ([]EndpointResult, error)
 
 	// Name はプロバイダー名を返す
 	Name() string
