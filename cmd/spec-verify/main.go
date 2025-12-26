@@ -16,6 +16,20 @@ import (
 
 const version = "0.1.0"
 
+// UI定数
+const (
+	progressBarLength      = 30
+	progressBarLengthSmall = 10
+	categoryUI             = "ui"
+	categoryAPI            = "api"
+	// 区切り線の幅
+	separatorWidthWide   = 60
+	separatorWidthNormal = 50
+	separatorWidthNarrow = 40
+	// リスト表示の最大件数
+	maxDisplayItems = 3
+)
+
 func main() {
 	if len(os.Args) < 2 {
 		printUsage()
@@ -116,6 +130,54 @@ func (opts commonOptions) buildLoadOptions() []config.LoadOption {
 	return loadOpts
 }
 
+// validateSpecTypes はSPECタイプのバリデーションを行い、有効なタイプのみを返す
+// 存在しないタイプがある場合は警告を出力する
+func validateSpecTypes(cfg *config.Config, types []string, contextLabel string) ([]string, error) {
+	var undefinedTypes []string
+	for _, typeName := range types {
+		if !cfg.HasSpecType(typeName) {
+			undefinedTypes = append(undefinedTypes, typeName)
+		}
+	}
+
+	if len(undefinedTypes) == 0 {
+		return types, nil
+	}
+
+	// 警告はstderrに出力（JSON出力時にも対応）
+	if contextLabel != "" {
+		fmt.Fprintf(os.Stderr, "⚠️  警告: %sに存在しないタイプが含まれています: %s\n",
+			contextLabel, strings.Join(undefinedTypes, ", "))
+	} else {
+		fmt.Fprintf(os.Stderr, "⚠️  警告: 存在しないタイプが指定されています: %s\n",
+			strings.Join(undefinedTypes, ", "))
+	}
+	fmt.Fprintln(os.Stderr, "定義済みタイプを確認するには: spec-verify types")
+
+	// 存在しないタイプを除外
+	var validTypes []string
+	for _, typeName := range types {
+		if cfg.HasSpecType(typeName) {
+			validTypes = append(validTypes, typeName)
+		}
+	}
+
+	if len(validTypes) == 0 {
+		return nil, fmt.Errorf("有効なタイプが1つもありません")
+	}
+
+	return validTypes, nil
+}
+
+// loadConfig は設定ファイルを読み込む共通関数
+func loadConfig(opts commonOptions) (*config.Config, error) {
+	configFile := opts.configFile
+	if configFile == "" {
+		configFile = config.FindConfigFile()
+	}
+	return config.Load(configFile, opts.buildLoadOptions()...)
+}
+
 func printUsage() {
 	fmt.Println(`spec-verify - SPEC駆動開発のための検証ツール
 
@@ -131,7 +193,7 @@ Commands:
   types             定義済みSPECタイプ一覧を表示
   groups            定義済みグループ一覧を表示
   endpoints         APIエンドポイント一覧を表示
-  coverage          APIカバレッジレポートを表示
+  coverage          ルートカバレッジレポート（ページ/APIに対するSPEC網羅率）
   version           バージョンを表示
   help              このヘルプを表示
 
@@ -173,7 +235,8 @@ Examples:
   # CI向け
   spec-verify check --format json
   spec-verify check api --threshold 70
-  spec-verify coverage --format json`)
+  spec-verify coverage --format json
+  spec-verify coverage --fail-under 80   # カバレッジ80%未満で失敗`)
 }
 
 func runInit() {
@@ -208,12 +271,7 @@ func runCheck(args []string) {
 	commonOpts := parseCommonOptions(args)
 
 	// 設定を読み込む
-	configFile := commonOpts.configFile
-	if configFile == "" {
-		configFile = config.FindConfigFile()
-	}
-
-	cfg, err := config.Load(configFile, commonOpts.buildLoadOptions()...)
+	cfg, err := loadConfig(commonOpts)
 	if err != nil {
 		fmt.Printf("エラー: 設定ファイルの読み込みに失敗しました: %v\n", err)
 		os.Exit(1)
@@ -253,58 +311,18 @@ func runCheck(args []string) {
 		}
 		specTypes = cfg.GetTypesByGroup(commonOpts.groupName)
 
-		// グループ内のタイプが実際に定義されているかをチェック
-		var undefinedTypes []string
-		for _, typeName := range specTypes {
-			if !cfg.HasSpecType(typeName) {
-				undefinedTypes = append(undefinedTypes, typeName)
-			}
-		}
-		if len(undefinedTypes) > 0 {
-			// 警告はstderrに出力（JSON出力時にも対応）
-			fmt.Fprintf(os.Stderr, "⚠️  警告: グループ '%s' に存在しないタイプが含まれています: %s\n",
-				commonOpts.groupName, strings.Join(undefinedTypes, ", "))
-			fmt.Fprintln(os.Stderr, "定義済みタイプを確認するには: spec-verify types")
-			// 存在しないタイプを除外して続行
-			validTypes := []string{}
-			for _, typeName := range specTypes {
-				if cfg.HasSpecType(typeName) {
-					validTypes = append(validTypes, typeName)
-				}
-			}
-			specTypes = validTypes
-			if len(specTypes) == 0 {
-				fmt.Printf("エラー: グループ '%s' に有効なタイプが1つもありません。\n", commonOpts.groupName)
-				os.Exit(1)
-			}
+		// グループ内のタイプをバリデーション
+		specTypes, err = validateSpecTypes(cfg, specTypes, fmt.Sprintf("グループ '%s'", commonOpts.groupName))
+		if err != nil {
+			fmt.Printf("エラー: グループ '%s' に%v\n", commonOpts.groupName, err)
+			os.Exit(1)
 		}
 	} else if len(commonOpts.specTypes) > 0 {
 		// 複数タイプ指定の場合
-		specTypes = commonOpts.specTypes
-
-		// 直接指定されたタイプが実際に定義されているかをチェック
-		var undefinedTypes []string
-		for _, typeName := range specTypes {
-			if !cfg.HasSpecType(typeName) {
-				undefinedTypes = append(undefinedTypes, typeName)
-			}
-		}
-		if len(undefinedTypes) > 0 {
-			// 警告はstderrに出力（JSON出力時にも対応）
-			fmt.Fprintf(os.Stderr, "⚠️  警告: 存在しないタイプが指定されています: %s\n", strings.Join(undefinedTypes, ", "))
-			fmt.Fprintln(os.Stderr, "定義済みタイプを確認するには: spec-verify types")
-			// 存在しないタイプを除外して続行
-			validTypes := []string{}
-			for _, typeName := range specTypes {
-				if cfg.HasSpecType(typeName) {
-					validTypes = append(validTypes, typeName)
-				}
-			}
-			specTypes = validTypes
-			if len(specTypes) == 0 {
-				fmt.Fprintln(os.Stderr, "エラー: 有効なタイプが1つもありません。")
-				os.Exit(1)
-			}
+		specTypes, err = validateSpecTypes(cfg, commonOpts.specTypes, "")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "エラー: %v\n", err)
+			os.Exit(1)
 		}
 	}
 
@@ -318,7 +336,7 @@ func runCheck(args []string) {
 		} else if len(specTypes) > 0 {
 			fmt.Printf("   タイプ: %s\n", strings.Join(specTypes, ", "))
 		}
-		fmt.Println(strings.Repeat("━", 50))
+		fmt.Println(strings.Repeat("━", separatorWidthNormal))
 	}
 
 	var summary *verifier.Summary
@@ -413,8 +431,8 @@ func outputConsole(summary *verifier.Summary, failUnder int) {
 		if len(result.Verification.MatchedItems) > 0 {
 			fmt.Println("   ✓ 一致:")
 			for i, item := range result.Verification.MatchedItems {
-				if i >= 3 {
-					fmt.Printf("     ... 他%d件\n", len(result.Verification.MatchedItems)-3)
+				if i >= maxDisplayItems {
+					fmt.Printf("     ... 他%d件\n", len(result.Verification.MatchedItems)-maxDisplayItems)
 					break
 				}
 				fmt.Printf("     - %s\n", item)
@@ -424,8 +442,8 @@ func outputConsole(summary *verifier.Summary, failUnder int) {
 		if len(result.Verification.UnmatchedItems) > 0 {
 			fmt.Println("   ✗ 不一致:")
 			for i, item := range result.Verification.UnmatchedItems {
-				if i >= 3 {
-					fmt.Printf("     ... 他%d件\n", len(result.Verification.UnmatchedItems)-3)
+				if i >= maxDisplayItems {
+					fmt.Printf("     ... 他%d件\n", len(result.Verification.UnmatchedItems)-maxDisplayItems)
 					break
 				}
 				fmt.Printf("     - %s\n", item)
@@ -434,7 +452,7 @@ func outputConsole(summary *verifier.Summary, failUnder int) {
 	}
 
 	// サマリー
-	fmt.Println("\n" + strings.Repeat("━", 50))
+	fmt.Println("\n" + strings.Repeat("━", separatorWidthNormal))
 	fmt.Println("\n📊 サマリー")
 	fmt.Printf("   総SPEC数: %d\n", summary.TotalSpecs)
 	fmt.Printf("   平均一致度: %.1f%%\n", summary.AverageMatch)
@@ -448,7 +466,7 @@ func outputConsole(summary *verifier.Summary, failUnder int) {
 		if result.Verification != nil {
 			percentage = result.Verification.MatchPercentage
 		}
-		bar := strings.Repeat("█", percentage/10) + strings.Repeat("░", 10-percentage/10)
+		bar := buildProgressBar(float64(percentage), progressBarLengthSmall)
 		fmt.Printf("   %s %3d%% %s\n", bar, percentage, result.SpecFile)
 	}
 
@@ -473,15 +491,38 @@ func getStatusEmoji(percentage float64) string {
 	return "❌"
 }
 
+// buildProgressBar はプログレスバーを生成する
+func buildProgressBar(percentage float64, length int) string {
+	filled := int(percentage / 100 * float64(length))
+	if filled > length {
+		filled = length
+	}
+	if filled < 0 {
+		filled = 0
+	}
+	return strings.Repeat("█", filled) + strings.Repeat("░", length-filled)
+}
+
+// getCategoryTag はカテゴリに応じたタグを返す
+func getCategoryTag(category string) string {
+	if category == categoryUI {
+		return "[UI] "
+	}
+	return "[API]"
+}
+
+// getCategoryDisplay はカテゴリの表示名とアイコンを返す
+func getCategoryDisplay(category string) (emoji string, label string) {
+	if category == categoryUI {
+		return "🖥️", "ページ (UI)"
+	}
+	return "🔌", "API"
+}
+
 // loadConfigAndProvider loads config and creates AI provider from common options
 // Returns config, provider, and bool indicating success (false means error was printed and os.Exit should be called)
 func loadConfigAndProvider(opts commonOptions) (*config.Config, ai.Provider, bool) {
-	configFile := opts.configFile
-	if configFile == "" {
-		configFile = config.FindConfigFile()
-	}
-
-	cfg, err := config.Load(configFile, opts.buildLoadOptions()...)
+	cfg, err := loadConfig(opts)
 	if err != nil {
 		fmt.Printf("エラー: 設定ファイルの読み込みに失敗しました: %v\n", err)
 		return nil, nil, false
@@ -560,7 +601,7 @@ func outputEndpointsConsole(endpoints []parser.Endpoint) {
 	}
 
 	fmt.Printf("📡 検出されたエンドポイント (%d件)\n", len(endpoints))
-	fmt.Println(strings.Repeat("━", 60))
+	fmt.Println(strings.Repeat("━", separatorWidthWide))
 
 	// ソースごとにグループ化
 	bySource := make(map[string][]parser.Endpoint)
@@ -570,7 +611,7 @@ func outputEndpointsConsole(endpoints []parser.Endpoint) {
 
 	for source, eps := range bySource {
 		fmt.Printf("\n📁 %s (%d件)\n", source, len(eps))
-		fmt.Println(strings.Repeat("─", 40))
+		fmt.Println(strings.Repeat("─", separatorWidthNarrow))
 		for _, ep := range eps {
 			desc := ""
 			if ep.Description != "" {
@@ -612,26 +653,60 @@ func runCoverage(args []string) {
 	}
 
 	if commonOpts.jsonOutput {
-		outputCoverageJSON(report)
+		outputCoverageJSON(report, commonOpts.failUnder)
 	} else {
-		outputCoverageConsole(report)
+		outputCoverageConsole(report, commonOpts.failUnder)
+	}
+
+	// 閾値チェック
+	if commonOpts.failUnder > 0 && report.CoveragePercentage < float64(commonOpts.failUnder) {
+		if !commonOpts.jsonOutput {
+			fmt.Printf("❌ カバレッジが閾値未満です: %.1f%% < %d%%\n", report.CoveragePercentage, commonOpts.failUnder)
+		}
+		os.Exit(1)
 	}
 }
 
-func outputCoverageJSON(report *parser.CoverageReport) {
-	data, _ := json.MarshalIndent(report, "", "  ")
+func outputCoverageJSON(report *parser.CoverageReport, failUnder int) {
+	// JSON出力用に閾値情報を追加
+	output := struct {
+		*parser.CoverageReport
+		FailUnder      int  `json:"failUnder,omitempty"`
+		BelowThreshold bool `json:"belowThreshold,omitempty"`
+	}{
+		CoverageReport: report,
+		FailUnder:      failUnder,
+		BelowThreshold: failUnder > 0 && report.CoveragePercentage < float64(failUnder),
+	}
+	data, _ := json.MarshalIndent(output, "", "  ")
 	fmt.Println(string(data))
 }
 
-func outputCoverageConsole(report *parser.CoverageReport) {
-	fmt.Println(strings.Repeat("━", 60))
-	fmt.Println("📊 APIカバレッジレポート")
-	fmt.Println(strings.Repeat("━", 60))
+func outputCoverageConsole(report *parser.CoverageReport, failUnder int) {
+	printCoverageHeader(failUnder)
+	printOverallSummary(report)
+	printCategoryBreakdown(report)
+	printCoveredRoutes(report.Covered)
+	printUncoveredRoutes(report.Uncovered)
+	printOrphanedSpecs(report.Orphaned)
+	fmt.Println()
+}
 
-	// カバレッジサマリー
+// printCoverageHeader はカバレッジレポートのヘッダーを出力する
+func printCoverageHeader(failUnder int) {
+	fmt.Println(strings.Repeat("━", separatorWidthWide))
+	fmt.Println("📊 ルートカバレッジレポート")
+	if failUnder > 0 {
+		fmt.Printf("   (閾値: %d%%)\n", failUnder)
+	}
+	fmt.Println(strings.Repeat("━", separatorWidthWide))
+}
+
+// printOverallSummary は全体サマリーを出力する
+func printOverallSummary(report *parser.CoverageReport) {
 	emoji := getStatusEmoji(report.CoveragePercentage)
-	fmt.Printf("\n%s カバレッジ: %.1f%%\n", emoji, report.CoveragePercentage)
-	fmt.Printf("   エンドポイント総数: %d\n", report.TotalEndpoints)
+	fmt.Printf("\n%s 全体カバレッジ: %.1f%%\n", emoji, report.CoveragePercentage)
+	fmt.Printf("   ルート総数: %d\n", report.TotalEndpoints)
 	fmt.Printf("   カバー済み (SPECあり): %d\n", report.CoveredEndpoints)
 	fmt.Printf("   未カバー (SPECなし): %d\n", report.UncoveredEndpoints)
 	fmt.Printf("   SPEC総数: %d\n", report.TotalSpecs)
@@ -639,69 +714,125 @@ func outputCoverageConsole(report *parser.CoverageReport) {
 		fmt.Printf("   孤立SPEC (対応なし): %d\n", report.OrphanedSpecs)
 	}
 
-	// プログレスバー
-	barLen := 30
-	covered := int(report.CoveragePercentage / 100 * float64(barLen))
-	if covered > barLen {
-		covered = barLen
-	}
-	bar := strings.Repeat("█", covered) + strings.Repeat("░", barLen-covered)
+	bar := buildProgressBar(report.CoveragePercentage, progressBarLength)
 	fmt.Printf("\n   [%s] %.1f%%\n", bar, report.CoveragePercentage)
+}
 
-	// カバー済みエンドポイント
-	if len(report.Covered) > 0 {
-		fmt.Printf("\n✅ カバー済みエンドポイント (%d件)\n", len(report.Covered))
-		fmt.Println(strings.Repeat("─", 40))
-		for _, item := range report.Covered {
-			specInfo := ""
-			if item.SpecFile != "" {
-				specInfo = fmt.Sprintf(" → %s", item.SpecFile)
-			}
-			fmt.Printf("  %-7s %s%s\n", item.Method, item.Path, specInfo)
-		}
+// printCategoryBreakdown はカテゴリ別カバレッジを出力する
+func printCategoryBreakdown(report *parser.CoverageReport) {
+	if len(report.ByCategory) == 0 {
+		return
 	}
 
-	// 未カバーエンドポイント
-	if len(report.Uncovered) > 0 {
-		fmt.Printf("\n❌ 未カバーエンドポイント (%d件)\n", len(report.Uncovered))
-		fmt.Println(strings.Repeat("─", 40))
-		for _, item := range report.Uncovered {
-			file := ""
-			if item.File != "" {
-				file = fmt.Sprintf(" [%s]", item.File)
-			}
-			fmt.Printf("  %-7s %s%s\n", item.Method, item.Path, file)
+	fmt.Println("\n" + strings.Repeat("─", separatorWidthWide))
+	fmt.Println("📂 カテゴリ別カバレッジ")
+	fmt.Println(strings.Repeat("─", separatorWidthWide))
+
+	// UIを先に、APIを後に表示
+	categories := []string{categoryUI, categoryAPI}
+	for _, catName := range categories {
+		cat, ok := report.ByCategory[catName]
+		if !ok || cat.Total == 0 {
+			continue
+		}
+		printCategoryCoverage(catName, cat)
+	}
+}
+
+// printCategoryCoverage は1カテゴリのカバレッジを出力する
+func printCategoryCoverage(catName string, cat *parser.CategoryCoverage) {
+	catEmoji, catLabel := getCategoryDisplay(catName)
+	statusEmoji := getStatusEmoji(cat.Percentage)
+
+	fmt.Printf("\n%s %s\n", catEmoji, catLabel)
+	fmt.Printf("   %s カバレッジ: %.1f%% (%d/%d)\n", statusEmoji, cat.Percentage, cat.Covered, cat.Total)
+	fmt.Printf("   [%s]\n", buildProgressBar(cat.Percentage, progressBarLength))
+
+	if len(cat.UncoveredItems) > 0 {
+		printUncoveredSummary(catName, cat.UncoveredItems)
+	}
+}
+
+// printUncoveredSummary は未カバー項目の簡潔なサマリーを出力する
+func printUncoveredSummary(catName string, items []parser.CoverageItem) {
+	fmt.Printf("   ❌ 未カバー: ")
+	paths := make([]string, 0, len(items))
+	for _, item := range items {
+		if catName == categoryAPI && item.Method != "" {
+			paths = append(paths, fmt.Sprintf("%s %s", item.Method, item.Path))
+		} else {
+			paths = append(paths, item.Path)
 		}
 	}
+	const maxDisplay = 5
+	if len(paths) <= maxDisplay {
+		fmt.Println(strings.Join(paths, ", "))
+	} else {
+		fmt.Printf("%s ... 他%d件\n", strings.Join(paths[:maxDisplay], ", "), len(paths)-maxDisplay)
+	}
+}
 
-	// 孤立したSPEC
-	if len(report.Orphaned) > 0 {
-		fmt.Printf("\n⚠️  孤立SPEC（対応するエンドポイントなし） (%d件)\n", len(report.Orphaned))
-		fmt.Println(strings.Repeat("─", 40))
-		for _, item := range report.Orphaned {
-			routePath := ""
-			if item.RoutePath != "" {
-				routePath = fmt.Sprintf(" [%s]", item.RoutePath)
-			}
-			fmt.Printf("  📄 %s%s\n", item.File, routePath)
-			if item.Title != "" {
-				fmt.Printf("     %s\n", item.Title)
-			}
-		}
+// printCoveredRoutes はカバー済みルートを出力する
+func printCoveredRoutes(items []parser.CoverageItem) {
+	if len(items) == 0 {
+		return
 	}
 
-	fmt.Println()
+	fmt.Println("\n" + strings.Repeat("─", separatorWidthWide))
+	fmt.Printf("✅ カバー済みルート (%d件)\n", len(items))
+	fmt.Println(strings.Repeat("─", separatorWidthNarrow))
+	for _, item := range items {
+		specInfo := ""
+		if item.SpecFile != "" {
+			specInfo = fmt.Sprintf(" → %s", item.SpecFile)
+		}
+		fmt.Printf("  %s %-7s %s%s\n", getCategoryTag(item.Category), item.Method, item.Path, specInfo)
+	}
+}
+
+// printUncoveredRoutes は未カバールートを出力する
+func printUncoveredRoutes(items []parser.CoverageItem) {
+	if len(items) == 0 {
+		return
+	}
+
+	fmt.Println("\n" + strings.Repeat("─", separatorWidthWide))
+	fmt.Printf("❌ 未カバールート (%d件)\n", len(items))
+	fmt.Println(strings.Repeat("─", separatorWidthNarrow))
+	for _, item := range items {
+		file := ""
+		if item.File != "" {
+			file = fmt.Sprintf(" [%s]", item.File)
+		}
+		fmt.Printf("  %s %-7s %s%s\n", getCategoryTag(item.Category), item.Method, item.Path, file)
+	}
+}
+
+// printOrphanedSpecs は孤立したSPECを出力する
+func printOrphanedSpecs(items []parser.OrphanedSpec) {
+	if len(items) == 0 {
+		return
+	}
+
+	fmt.Println("\n" + strings.Repeat("─", separatorWidthWide))
+	fmt.Printf("⚠️  孤立SPEC（対応するルートなし） (%d件)\n", len(items))
+	fmt.Println(strings.Repeat("─", separatorWidthNarrow))
+	for _, item := range items {
+		routePath := ""
+		if item.RoutePath != "" {
+			routePath = fmt.Sprintf(" [%s]", item.RoutePath)
+		}
+		fmt.Printf("  📄 %s%s\n", item.File, routePath)
+		if item.Title != "" {
+			fmt.Printf("     %s\n", item.Title)
+		}
+	}
 }
 
 func runTypes(args []string) {
 	commonOpts := parseCommonOptions(args)
 
-	configFile := commonOpts.configFile
-	if configFile == "" {
-		configFile = config.FindConfigFile()
-	}
-
-	cfg, err := config.Load(configFile)
+	cfg, err := loadConfig(commonOpts)
 	if err != nil {
 		fmt.Printf("エラー: 設定ファイルの読み込みに失敗しました: %v\n", err)
 		os.Exit(1)
@@ -752,7 +883,7 @@ func outputTypesConsole(cfg *config.Config, types []string) {
 	}
 
 	fmt.Println("\n📋 定義済みSPECタイプ")
-	fmt.Println(strings.Repeat("━", 50))
+	fmt.Println(strings.Repeat("━", separatorWidthNormal))
 
 	for _, typeName := range types {
 		info := cfg.GetSpecTypeInfo(typeName)
@@ -782,12 +913,7 @@ func outputTypesConsole(cfg *config.Config, types []string) {
 func runGroups(args []string) {
 	commonOpts := parseCommonOptions(args)
 
-	configFile := commonOpts.configFile
-	if configFile == "" {
-		configFile = config.FindConfigFile()
-	}
-
-	cfg, err := config.Load(configFile)
+	cfg, err := loadConfig(commonOpts)
 	if err != nil {
 		fmt.Printf("エラー: 設定ファイルの読み込みに失敗しました: %v\n", err)
 		os.Exit(1)
@@ -842,7 +968,7 @@ groups:
 	}
 
 	fmt.Println("\n📦 定義済みグループ")
-	fmt.Println(strings.Repeat("━", 50))
+	fmt.Println(strings.Repeat("━", separatorWidthNormal))
 
 	for _, groupName := range groups {
 		group, ok := cfg.Groups[groupName]

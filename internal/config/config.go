@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -31,24 +32,34 @@ type Config struct {
 	// グループ定義（新機能）
 	Groups map[string]Group `yaml:"groups,omitempty"`
 
-	// APIソース定義（エンドポイント抽出用）
-	APISources []APISource `yaml:"api_sources,omitempty"`
+	// APIソース定義（エンドポイント抽出用）- 後方互換
+	APISources []RouteSource `yaml:"api_sources,omitempty"`
+
+	// ルートソース定義（ページ/API両方対応）
+	RouteSources []RouteSource `yaml:"route_sources,omitempty"`
 
 	// 検証時のオプション
 	Options VerifyOptions `yaml:"options"`
 }
 
-// APISource はAPIエンドポイントのソース定義
-type APISource struct {
+// RouteSource はルート（API/ページ）のソース定義
+type RouteSource struct {
 	// タイプ: express, fastify, openapi, graphql, go-echo, go-gin, rails, django, auto
 	Type string `yaml:"type"`
 
 	// ファイルパターン（glob形式）
 	Patterns []string `yaml:"patterns"`
 
+	// カテゴリ: ui（ページルート）, api（APIエンドポイント）
+	// 省略時はapiと判定、パターンに基づいて自動判定も行う
+	Category string `yaml:"category,omitempty"`
+
 	// オプション設定
 	Options map[string]string `yaml:"options,omitempty"`
 }
+
+// APISource は後方互換のためのエイリアス
+type APISource = RouteSource
 
 // VerifyOptions は検証時のオプション
 type VerifyOptions struct {
@@ -330,4 +341,64 @@ func (c *Config) GetSpecTypeInfo(specType string) *SpecType {
 		}
 	}
 	return nil
+}
+
+// GetAllRouteSources はapi_sourcesとroute_sourcesを統合して返す
+// カテゴリが未設定の場合は自動判定する
+func (c *Config) GetAllRouteSources() []RouteSource {
+	var sources []RouteSource
+
+	// route_sources を優先
+	for _, src := range c.RouteSources {
+		s := src
+		if s.Category == "" {
+			s.Category = inferCategory(s.Patterns)
+		}
+		sources = append(sources, s)
+	}
+
+	// api_sources も追加（後方互換）
+	for _, src := range c.APISources {
+		s := src
+		if s.Category == "" {
+			s.Category = inferCategory(s.Patterns)
+		}
+		sources = append(sources, s)
+	}
+
+	return sources
+}
+
+// inferCategory はパターンからカテゴリを推測する
+func inferCategory(patterns []string) string {
+	for _, p := range patterns {
+		// UIパターンの検出
+		if containsAny(p, []string{
+			"routes", "pages", "views", "screens",
+			".tsx", ".jsx", ".vue", ".svelte",
+			"client", "frontend", "app/routes",
+		}) && !containsAny(p, []string{"api", "server"}) {
+			return "ui"
+		}
+		// APIパターンの検出
+		if containsAny(p, []string{
+			"api", "server", "backend",
+			"openapi", "swagger",
+		}) {
+			return "api"
+		}
+	}
+	// デフォルトはapi
+	return "api"
+}
+
+// containsAny は文字列が指定されたキーワードのいずれかを含むか（大文字小文字区別なし）
+func containsAny(s string, keywords []string) bool {
+	sLower := strings.ToLower(s)
+	for _, kw := range keywords {
+		if strings.Contains(sLower, strings.ToLower(kw)) {
+			return true
+		}
+	}
+	return false
 }

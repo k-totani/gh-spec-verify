@@ -12,9 +12,10 @@ import (
 	"github.com/k-totani/spec-verify/internal/config"
 )
 
-// Endpoint はAPIエンドポイントを表す
+// Endpoint はルート（API/ページ）を表す
 type Endpoint struct {
 	// HTTPメソッド (GET, POST, PUT, DELETE, PATCH, GRAPHQL等)
+	// ページの場合は "PAGE" や "GET" が設定される
 	Method string `json:"method"`
 
 	// パス (/users/:id など)
@@ -23,6 +24,9 @@ type Endpoint struct {
 	// ソースタイプ (express, openapi, auto等)
 	Source string `json:"source"`
 
+	// カテゴリ (ui, api)
+	Category string `json:"category"`
+
 	// 元ファイルパス
 	File string `json:"file"`
 
@@ -30,7 +34,7 @@ type Endpoint struct {
 	Description string `json:"description,omitempty"`
 }
 
-// ExtractEndpoints は設定に基づいてエンドポイントを抽出する
+// ExtractEndpoints は設定に基づいてルートを抽出する
 func ExtractEndpoints(ctx context.Context, sources []config.APISource, provider ai.Provider) ([]Endpoint, error) {
 	var allEndpoints []Endpoint
 
@@ -49,6 +53,17 @@ func ExtractEndpoints(ctx context.Context, sources []config.APISource, provider 
 
 		if err != nil {
 			return nil, fmt.Errorf("failed to extract endpoints from %s: %w", source.Type, err)
+		}
+
+		// カテゴリを設定
+		category := source.Category
+		if category == "" {
+			category = "api" // デフォルト
+		}
+		for i := range endpoints {
+			if endpoints[i].Category == "" {
+				endpoints[i].Category = category
+			}
 		}
 
 		allEndpoints = append(allEndpoints, endpoints...)

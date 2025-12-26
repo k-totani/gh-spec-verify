@@ -9,15 +9,15 @@ import (
 	"github.com/k-totani/spec-verify/internal/config"
 )
 
-// CoverageReport はAPIエンドポイントのカバレッジレポート
+// CoverageReport はルート（API/ページ）のカバレッジレポート
 type CoverageReport struct {
-	// 総エンドポイント数
+	// 総ルート数
 	TotalEndpoints int `json:"totalEndpoints"`
 
-	// カバーされているエンドポイント数（SPECあり）
+	// カバーされているルート数（SPECあり）
 	CoveredEndpoints int `json:"coveredEndpoints"`
 
-	// カバーされていないエンドポイント数（SPECなし）
+	// カバーされていないルート数（SPECなし）
 	UncoveredEndpoints int `json:"uncoveredEndpoints"`
 
 	// カバレッジ率（パーセント）
@@ -26,17 +26,44 @@ type CoverageReport struct {
 	// 総SPEC数
 	TotalSpecs int `json:"totalSpecs"`
 
-	// 孤立したSPEC数（エンドポイントなし）
+	// 孤立したSPEC数（ルートなし）
 	OrphanedSpecs int `json:"orphanedSpecs"`
 
-	// カバーされているエンドポイント詳細
+	// カバーされているルート詳細
 	Covered []CoverageItem `json:"covered"`
 
-	// カバーされていないエンドポイント詳細
+	// カバーされていないルート詳細
 	Uncovered []CoverageItem `json:"uncovered"`
 
-	// 孤立したSPEC詳細（対応するエンドポイントがないSPEC）
+	// 孤立したSPEC詳細（対応するルートがないSPEC）
 	Orphaned []OrphanedSpec `json:"orphaned,omitempty"`
+
+	// カテゴリ別サマリー
+	ByCategory map[string]*CategoryCoverage `json:"byCategory,omitempty"`
+}
+
+// CategoryCoverage はカテゴリ別のカバレッジ情報
+type CategoryCoverage struct {
+	// カテゴリ名（ui, api）
+	Category string `json:"category"`
+
+	// 総ルート数
+	Total int `json:"total"`
+
+	// カバー済み数
+	Covered int `json:"covered"`
+
+	// 未カバー数
+	Uncovered int `json:"uncovered"`
+
+	// カバレッジ率
+	Percentage float64 `json:"percentage"`
+
+	// カバー済みルート
+	CoveredItems []CoverageItem `json:"coveredItems,omitempty"`
+
+	// 未カバールート
+	UncoveredItems []CoverageItem `json:"uncoveredItems,omitempty"`
 }
 
 // CoverageItem はカバレッジ項目
@@ -44,11 +71,14 @@ type CoverageItem struct {
 	// HTTPメソッド
 	Method string `json:"method"`
 
-	// エンドポイントパス
+	// ルートパス
 	Path string `json:"path"`
 
 	// ソースタイプ
 	Source string `json:"source"`
+
+	// カテゴリ（ui, api）
+	Category string `json:"category"`
 
 	// 元ファイル
 	File string `json:"file,omitempty"`
@@ -69,32 +99,33 @@ type OrphanedSpec struct {
 	RoutePath string `json:"routePath,omitempty"`
 }
 
-// CalculateCoverage はエンドポイントとSPECのカバレッジを計算する
+// CalculateCoverage はルートとSPECのカバレッジを計算する
 func CalculateCoverage(ctx context.Context, cfg *config.Config, provider ai.Provider) (*CoverageReport, error) {
 	report := &CoverageReport{
-		Covered:   []CoverageItem{},
-		Uncovered: []CoverageItem{},
-		Orphaned:  []OrphanedSpec{},
+		Covered:    []CoverageItem{},
+		Uncovered:  []CoverageItem{},
+		Orphaned:   []OrphanedSpec{},
+		ByCategory: make(map[string]*CategoryCoverage),
 	}
 
-	// エンドポイントを抽出
-	endpoints, err := ExtractEndpoints(ctx, cfg.APISources, provider)
+	// ルートソースを取得（api_sources + route_sources を統合）
+	sources := cfg.GetAllRouteSources()
+	if len(sources) == 0 {
+		// 後方互換: APISources のみ使用
+		sources = cfg.APISources
+	}
+
+	// ルートを抽出
+	endpoints, err := ExtractEndpoints(ctx, sources, provider)
 	if err != nil {
 		return nil, err
 	}
 	report.TotalEndpoints = len(endpoints)
 
-	// SPECファイルを検索（APIタイプのみ）
-	specFiles, err := FindSpecFiles(cfg.SpecsDir, "api")
+	// SPECファイルを検索（全タイプ）
+	specFiles, err := FindSpecFiles(cfg.SpecsDir, "")
 	if err != nil {
 		return nil, err
-	}
-	// apiディレクトリがなければ全SPECを検索
-	if len(specFiles) == 0 {
-		specFiles, err = FindSpecFiles(cfg.SpecsDir, "")
-		if err != nil {
-			return nil, err
-		}
 	}
 	report.TotalSpecs = len(specFiles)
 
@@ -119,14 +150,33 @@ func CalculateCoverage(ctx context.Context, cfg *config.Config, provider ai.Prov
 	// マッチング用のセット
 	matchedSpecs := make(map[string]bool)
 
-	// 各エンドポイントをチェック
+	// カテゴリ別集計の初期化
+	initCategoryIfNeeded := func(cat string) {
+		if _, ok := report.ByCategory[cat]; !ok {
+			report.ByCategory[cat] = &CategoryCoverage{
+				Category:       cat,
+				CoveredItems:   []CoverageItem{},
+				UncoveredItems: []CoverageItem{},
+			}
+		}
+	}
+
+	// 各ルートをチェック
 	for _, ep := range endpoints {
 		normalizedPath := NormalizePath(ep.Path)
+		category := ep.Category
+		if category == "" {
+			category = "api"
+		}
+
+		initCategoryIfNeeded(category)
+
 		item := CoverageItem{
-			Method: ep.Method,
-			Path:   ep.Path,
-			Source: ep.Source,
-			File:   ep.File,
+			Method:   ep.Method,
+			Path:     ep.Path,
+			Source:   ep.Source,
+			Category: category,
+			File:     ep.File,
 		}
 
 		// SPECとマッチするか確認
@@ -135,6 +185,11 @@ func CalculateCoverage(ctx context.Context, cfg *config.Config, provider ai.Prov
 			report.Covered = append(report.Covered, item)
 			report.CoveredEndpoints++
 			matchedSpecs[spec.FilePath] = true
+
+			// カテゴリ別集計
+			report.ByCategory[category].CoveredItems = append(report.ByCategory[category].CoveredItems, item)
+			report.ByCategory[category].Covered++
+			report.ByCategory[category].Total++
 		} else {
 			// パスの一部マッチも試行
 			matched := false
@@ -145,13 +200,30 @@ func CalculateCoverage(ctx context.Context, cfg *config.Config, provider ai.Prov
 					report.CoveredEndpoints++
 					matchedSpecs[spec.FilePath] = true
 					matched = true
+
+					// カテゴリ別集計
+					report.ByCategory[category].CoveredItems = append(report.ByCategory[category].CoveredItems, item)
+					report.ByCategory[category].Covered++
+					report.ByCategory[category].Total++
 					break
 				}
 			}
 			if !matched {
 				report.Uncovered = append(report.Uncovered, item)
 				report.UncoveredEndpoints++
+
+				// カテゴリ別集計
+				report.ByCategory[category].UncoveredItems = append(report.ByCategory[category].UncoveredItems, item)
+				report.ByCategory[category].Uncovered++
+				report.ByCategory[category].Total++
 			}
+		}
+	}
+
+	// カテゴリ別のカバレッジ率を計算
+	for _, cat := range report.ByCategory {
+		if cat.Total > 0 {
+			cat.Percentage = float64(cat.Covered) / float64(cat.Total) * 100
 		}
 	}
 
