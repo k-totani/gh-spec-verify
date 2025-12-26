@@ -81,11 +81,10 @@ func NewProvider(providerName string, apiKey string) (Provider, error) {
 	switch providerName {
 	case "claude", "anthropic":
 		return NewClaudeProvider(apiKey)
-	// 将来的に他のプロバイダーを追加
-	// case "openai":
-	// 	return NewOpenAIProvider(apiKey)
-	// case "gemini":
-	// 	return NewGeminiProvider(apiKey)
+	case "openai", "gpt":
+		return NewOpenAIProvider(apiKey)
+	case "gemini", "google":
+		return NewGeminiProvider(apiKey)
 	default:
 		return NewClaudeProvider(apiKey)
 	}

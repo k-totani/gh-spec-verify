@@ -161,6 +161,17 @@ func parseOpenAPIFile(filePath string) ([]Endpoint, error) {
 	return endpoints, nil
 }
 
+// maxBatchBytes はバッチあたりの最大バイト数（約6000トークン相当）
+// Claude APIの制限（10,000トークン/分）を考慮して余裕を持たせる
+const maxBatchBytes = 20000
+
+// fileWithContent はファイルパスと内容を保持する
+type fileWithContent struct {
+	path    string
+	content string
+	size    int
+}
+
 // extractWithAI はAIを使ってエンドポイントを抽出する
 func extractWithAI(ctx context.Context, source config.APISource, provider ai.Provider) ([]Endpoint, error) {
 	var allEndpoints []Endpoint
@@ -191,45 +202,108 @@ func extractWithAI(ctx context.Context, source config.APISource, provider ai.Pro
 	}
 
 	// ファイル内容を読み込む
-	var fileContents []string
+	var fileContents []fileWithContent
 	for _, file := range files {
 		content, err := os.ReadFile(file)
 		if err != nil {
 			continue
 		}
-		fileContents = append(fileContents, fmt.Sprintf("=== File: %s ===\n%s", file, string(content)))
+		formatted := fmt.Sprintf("=== File: %s ===\n%s", file, string(content))
+		fileContents = append(fileContents, fileWithContent{
+			path:    file,
+			content: formatted,
+			size:    len(formatted),
+		})
 	}
 
 	if len(fileContents) == 0 {
 		return nil, nil
 	}
 
-	// AIでエンドポイント/ルートを抽出
+	// AI抽出オプション
 	opts := &ai.ExtractOptions{
 		SourceType: source.Type,
 		Category:   source.Category,
 	}
-	aiResults, err := provider.ExtractEndpoints(ctx, opts, strings.Join(fileContents, "\n\n"))
-	if err != nil {
-		return nil, err
+
+	// Claudeの場合のみバッチ処理（レート制限が厳しいため）
+	// OpenAI/Geminiは一括処理
+	var batches [][]fileWithContent
+	if provider.Name() == "claude" {
+		batches = splitIntoBatches(fileContents, maxBatchBytes)
+	} else {
+		// 全ファイルを1バッチとして処理
+		batches = [][]fileWithContent{fileContents}
 	}
 
-	// ai.EndpointResult を parser.Endpoint に変換
-	for _, result := range aiResults {
-		ep := Endpoint{
-			Method:      result.Method,
-			Path:        result.Path,
-			Source:      source.Type,
-			File:        result.File,
-			Description: result.Description,
+	for _, batch := range batches {
+		// バッチ内のファイル内容を結合
+		var contents []string
+		for _, fc := range batch {
+			contents = append(contents, fc.content)
 		}
-		if ep.Source == "" {
-			ep.Source = source.Type
+
+		aiResults, err := provider.ExtractEndpoints(ctx, opts, strings.Join(contents, "\n\n"))
+		if err != nil {
+			return nil, err
 		}
-		allEndpoints = append(allEndpoints, ep)
+
+		// ai.EndpointResult を parser.Endpoint に変換
+		for _, result := range aiResults {
+			ep := Endpoint{
+				Method:      result.Method,
+				Path:        result.Path,
+				Source:      source.Type,
+				File:        result.File,
+				Description: result.Description,
+			}
+			if ep.Source == "" {
+				ep.Source = source.Type
+			}
+			allEndpoints = append(allEndpoints, ep)
+		}
 	}
 
 	return allEndpoints, nil
+}
+
+// splitIntoBatches はファイルをバッチに分割する
+func splitIntoBatches(files []fileWithContent, maxBytes int) [][]fileWithContent {
+	var batches [][]fileWithContent
+	var currentBatch []fileWithContent
+	var currentSize int
+
+	for _, fc := range files {
+		// 単一ファイルが最大サイズを超える場合はそのまま1バッチに
+		if fc.size > maxBytes {
+			if len(currentBatch) > 0 {
+				batches = append(batches, currentBatch)
+				currentBatch = nil
+				currentSize = 0
+			}
+			batches = append(batches, []fileWithContent{fc})
+			continue
+		}
+
+		// 現在のバッチに追加すると最大サイズを超える場合は新しいバッチを開始
+		if currentSize+fc.size > maxBytes {
+			if len(currentBatch) > 0 {
+				batches = append(batches, currentBatch)
+			}
+			currentBatch = []fileWithContent{fc}
+			currentSize = fc.size
+		} else {
+			currentBatch = append(currentBatch, fc)
+			currentSize += fc.size
+		}
+	}
+
+	// 残りのバッチを追加
+	if len(currentBatch) > 0 {
+		batches = append(batches, currentBatch)
+	}
+
+	return batches
 }
 
 // findFilesRecursive は再帰的にファイルを検索する（**パターン対応）

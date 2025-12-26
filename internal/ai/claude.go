@@ -74,58 +74,12 @@ func (p *ClaudeProvider) VerifyWithOptions(ctx context.Context, specContent stri
 		prompt = buildVerificationPrompt(specContent, codeContents)
 	}
 
-	req := claudeRequest{
-		Model:     p.model,
-		MaxTokens: 2000,
-		Messages: []claudeMessage{
-			{Role: "user", Content: prompt},
-		},
-	}
-
-	reqBody, err := json.Marshal(req)
+	text, err := p.callAPI(ctx, prompt, 2000)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
+		return nil, err
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", claudeAPIURL, bytes.NewReader(reqBody))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("x-api-key", p.apiKey)
-	httpReq.Header.Set("anthropic-version", "2023-06-01")
-
-	client := &http.Client{}
-	resp, err := client.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("failed to send request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(body))
-	}
-
-	var claudeResp claudeResponse
-	if err := json.Unmarshal(body, &claudeResp); err != nil {
-		return nil, fmt.Errorf("failed to parse response: %w", err)
-	}
-
-	if claudeResp.Error != nil {
-		return nil, fmt.Errorf("API error: %s", claudeResp.Error.Message)
-	}
-
-	if len(claudeResp.Content) == 0 {
-		return nil, fmt.Errorf("empty response from API")
-	}
-
-	return parseVerificationResult(claudeResp.Content[0].Text)
+	return parseVerificationResult(text)
 }
 
 // buildCodeSection はコードセクションを構築する共通関数
@@ -221,9 +175,19 @@ func (p *ClaudeProvider) ExtractEndpoints(ctx context.Context, opts *ExtractOpti
 		prompt = buildEndpointExtractionPrompt(opts.GetSourceType(), codeContent)
 	}
 
+	text, err := p.callAPI(ctx, prompt, 4000)
+	if err != nil {
+		return nil, err
+	}
+
+	return parseEndpointResult(text)
+}
+
+// callAPI はClaude APIを呼び出す共通関数
+func (p *ClaudeProvider) callAPI(ctx context.Context, prompt string, maxTokens int) (string, error) {
 	req := claudeRequest{
 		Model:     p.model,
-		MaxTokens: 4000,
+		MaxTokens: maxTokens,
 		Messages: []claudeMessage{
 			{Role: "user", Content: prompt},
 		},
@@ -231,12 +195,12 @@ func (p *ClaudeProvider) ExtractEndpoints(ctx context.Context, opts *ExtractOpti
 
 	reqBody, err := json.Marshal(req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
+		return "", fmt.Errorf("failed to marshal request: %w", err)
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", claudeAPIURL, bytes.NewReader(reqBody))
 	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+		return "", fmt.Errorf("failed to create request: %w", err)
 	}
 
 	httpReq.Header.Set("Content-Type", "application/json")
@@ -246,33 +210,33 @@ func (p *ClaudeProvider) ExtractEndpoints(ctx context.Context, opts *ExtractOpti
 	client := &http.Client{}
 	resp, err := client.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("failed to send request: %w", err)
+		return "", fmt.Errorf("failed to send request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
+		return "", fmt.Errorf("failed to read response: %w", err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(body))
+		return "", fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(body))
 	}
 
 	var claudeResp claudeResponse
 	if err := json.Unmarshal(body, &claudeResp); err != nil {
-		return nil, fmt.Errorf("failed to parse response: %w", err)
+		return "", fmt.Errorf("failed to parse response: %w", err)
 	}
 
 	if claudeResp.Error != nil {
-		return nil, fmt.Errorf("API error: %s", claudeResp.Error.Message)
+		return "", fmt.Errorf("API error: %s", claudeResp.Error.Message)
 	}
 
 	if len(claudeResp.Content) == 0 {
-		return nil, fmt.Errorf("empty response from API")
+		return "", fmt.Errorf("empty response from API")
 	}
 
-	return parseEndpointResult(claudeResp.Content[0].Text)
+	return claudeResp.Content[0].Text, nil
 }
 
 // buildEndpointExtractionPrompt はエンドポイント抽出用のプロンプトを構築する
